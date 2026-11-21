@@ -241,6 +241,19 @@ class Mt5LinkServer implements Executor {
         .toList();
   }
 
+  @override
+  Future<double?> riskPerLot(String symbol, Side side, double entry, double sl) async {
+    final resp = await _request(Cmd.getRiskPerLot, {
+      'SYMBOL': symbol,
+      'SIDE': side.name,
+      'ENTRY': entry.toString(),
+      'SL': sl.toString(),
+    });
+    if (resp['CMD'] == 'ERROR') return null;
+    final v = double.tryParse(resp['RISK_PER_LOT'] ?? '');
+    return (v != null && v > 0) ? v : null;
+  }
+
   Future<void> stop() async {
     _heartbeat?.cancel();
     await _server?.close();

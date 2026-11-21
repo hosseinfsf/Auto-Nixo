@@ -43,6 +43,7 @@ class Cmd {
   static const getPositions = 'GET_POSITIONS';
   static const getRates = 'GET_RATES';
   static const getCalendar = 'GET_CALENDAR';
+  static const getRiskPerLot = 'GET_RISK_PER_LOT';
 }
 
 /// Wire events (EA -> engine).

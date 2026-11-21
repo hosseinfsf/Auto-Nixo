@@ -1,9 +1,14 @@
 /// Position sizing.
 ///
-/// Modes: % risk of equity/balance, fixed cash, fixed lot. Respects per-input
-/// multiplier, per-symbol caps, min/max lot, and commission+slippage allowance.
+/// Default mode: RISK PERCENTAGE OF ACCOUNT EQUITY (base risk 0.50%).
+/// Fixed-lot sizing is NOT part of the normal workflow; it exists only as a
+/// deprecated legacy option that is disabled by default and cannot be
+/// activated accidentally (see [SizingConfig.legacyFixedLotAllowed]).
+///
 /// The final lot is computed in the EA via OrderCalcProfit; here we compute the
-/// *risk-based* target lot and clamp it.
+/// *risk-based* target lot from the authoritative risk-per-lot value supplied
+/// by MT5 and clamp it. If the computed volume falls below the broker minimum
+/// or above the maximum, the trade is REJECTED (never silently adjusted).
 library;
 
 import '../models.dart';
@@ -13,10 +18,11 @@ enum SizeMode { riskPercent, fixedCash, fixedLot }
 class SizingConfig {
   SizingConfig({
     this.mode = SizeMode.riskPercent,
-    this.riskPercent = 1.0,
+    this.riskPercent = 0.5,
     this.riskMultiplier = 1.0,
     this.fixedCash,
     this.fixedLot,
+    this.legacyFixedLotAllowed = false,
     this.minLot = 0.01,
     this.maxLot = 10.0,
     this.lotStep = 0.01,
@@ -29,6 +35,11 @@ class SizingConfig {
   final double riskMultiplier;
   final double? fixedCash;
   final double? fixedLot;
+
+  /// When false (default), fixed-lot sizing is rejected outright. Set to true
+  /// only through a separate advanced/legacy configuration path.
+  final bool legacyFixedLotAllowed;
+
   final double minLot;
   final double maxLot;
   final double lotStep;
@@ -42,9 +53,10 @@ class Sizer {
   final SizingConfig config;
 
   /// Compute risk-based lots for a signal.
-  /// [account] supplies equity/balance; [riskPerLot] is the monetary risk per
-  /// 1.0 lot at the SL distance (computed by the EA via OrderCalcProfit; here
-  /// we accept it as input).
+  ///
+  /// [account] supplies equity/balance; [riskPerLot] is the authoritative
+  /// monetary risk per 1.0 lot at the SL distance, as computed by the EA via
+  /// OrderCalcProfit. It must be > 0; otherwise the trade is rejected.
   SizingResult size({
     required ParsedSignal signal,
     required AccountInfo account,
@@ -57,12 +69,15 @@ class Sizer {
 
     switch (config.mode) {
       case SizeMode.fixedLot:
+        if (!config.legacyFixedLotAllowed) {
+          return SizingResult(lots: 0, reason: 'fixed_lot_disabled');
+        }
         lots = config.fixedLot ?? 0.01;
-        reason = 'fixed_lot';
+        reason = 'fixed_lot_legacy';
         break;
       case SizeMode.fixedCash:
         final cash = config.fixedCash ?? 0;
-        final riskPerLotLocal = riskPerLot ?? 1.0;
+        final riskPerLotLocal = riskPerLot ?? 0;
         if (riskPerLotLocal <= 0) {
           return SizingResult(lots: 0, reason: 'risk_per_lot_unknown');
         }
@@ -72,7 +87,7 @@ class Sizer {
       case SizeMode.riskPercent:
         final base = account.equity > 0 ? account.equity : account.balance;
         final riskMoney = base * (config.riskPercent / 100.0) * config.riskMultiplier;
-        final riskPerLotLocal = riskPerLot ?? 1.0;
+        final riskPerLotLocal = riskPerLot ?? 0;
         if (riskPerLotLocal <= 0) {
           return SizingResult(lots: 0, reason: 'risk_per_lot_unknown');
         }
@@ -81,15 +96,15 @@ class Sizer {
         break;
     }
 
-    // Clamp to [minLot, maxLot] and round down to step.
+    // Round DOWN to the broker volume step.
     lots = _roundDownToStep(lots, config.lotStep);
+
+    // Reject (do not silently adjust) if outside broker limits.
     if (lots < config.minLot) {
-      lots = config.minLot;
-      reason = '$reason;clamped_to_min';
+      return SizingResult(lots: 0, reason: 'below_broker_minimum');
     }
     if (lots > config.maxLot) {
-      lots = config.maxLot;
-      reason = '$reason;clamped_to_max';
+      return SizingResult(lots: 0, reason: 'above_max_lot');
     }
 
     return SizingResult(

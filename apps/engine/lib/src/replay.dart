@@ -11,12 +11,22 @@ import 'db.dart';
 import 'pipeline.dart';
 
 class FakeExecutor implements Executor {
-  FakeExecutor({this.quoteForSymbol = const {}});
+  FakeExecutor({
+    this.quoteForSymbol = const {},
+    this.riskPerLotForSymbol = const {},
+    this.defaultRiskPerLot = 1000.0,
+  });
 
   final Map<String, Quote> quoteForSymbol;
+
+  /// Authoritative risk-per-lot per symbol; falls back to [defaultRiskPerLot]
+  /// (a test-only value — never used for live trading).
+  final Map<String, double> riskPerLotForSymbol;
+  final double defaultRiskPerLot;
   final List<OrderPlan> opened = [];
   final List<String> closed = [];
   bool failOpen = false;
+  bool riskPerLotUnavailable = false;
 
   @override
   Future<ExecutionAck> open(OrderPlan order) async {
@@ -58,6 +68,12 @@ class FakeExecutor implements Executor {
 
   @override
   Future<List<double>> rates(String symbol, int count) async => [];
+
+  @override
+  Future<double?> riskPerLot(String symbol, Side side, double entry, double sl) async {
+    if (riskPerLotUnavailable) return null;
+    return riskPerLotForSymbol[symbol] ?? defaultRiskPerLot;
+  }
 }
 
 class ReplayTool {

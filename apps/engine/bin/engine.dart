@@ -65,8 +65,35 @@ Future<void> _run(EngineConfig config) async {
   final perInputLimits = PerInputLimitsManager();
   final roulette = RouletteManager(
     config: RouletteConfig(),
-    accountTrigger: AccountRouletteTrigger(),
+    accountTrigger: AccountRouletteTrigger(
+      baselineEquity:
+          double.tryParse(db.getSetting('roulette_baseline_equity') ?? '') ?? 0,
+      triggerPct: 3.0,
+      activated: db.getSetting('roulette_account_activated') == '1',
+    ),
+    persist: (state) => db.upsertRouletteState({
+      'source_id': state.sourceId,
+      'model': state.model.name,
+      'step': state.step,
+      'max_step': state.maxStep,
+      'activated': state.activated,
+      'last_updated': DateTime.now().millisecondsSinceEpoch ~/ 1000,
+    }),
   );
+
+  // Restore persisted per-source roulette states (survive restart).
+  for (final row in db.listRouletteStates()) {
+    roulette.restore(row['source_id'] as String, RouletteState(
+      sourceId: row['source_id'] as String,
+      model: RouletteModel.values.firstWhere(
+        (m) => m.name == row['model'],
+        orElse: () => RouletteModel.volume,
+      ),
+      step: row['step'] as int,
+      maxStep: row['max_step'] as int,
+      activated: row['activated'] == 1,
+    ));
+  }
 
   final pipeline = Pipeline(
     db: db,

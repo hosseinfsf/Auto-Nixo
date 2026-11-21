@@ -174,6 +174,7 @@ void HandleLine(string line)
    else if(cmd == "GET_POSITIONS") SendPositions(reqId);
    else if(cmd == "GET_RATES") SendRates(fields, reqId);
    else if(cmd == "GET_CALENDAR") SendCalendar(reqId);
+   else if(cmd == "GET_RISK_PER_LOT") HandleRiskPerLot(fields, reqId);
 }
 
 //+------------------------------------------------------------------+
@@ -482,6 +483,45 @@ void SendCalendar(string reqId)
    // accessible in MQL5. We report an empty calendar; the engine can use
    // an external source. (Spike S2 verifies availability.)
    SendLine(StringFormat("CMD=CALENDAR|REQ_ID=%s|CALENDAR=", reqId));
+}
+
+//+------------------------------------------------------------------+
+// GET_RISK_PER_LOT: compute the monetary risk per 1.0 lot at the given
+// entry/SL using OrderCalcProfit (authoritative for all symbol types).
+//+------------------------------------------------------------------+
+void HandleRiskPerLot(string &fields[][2], string reqId)
+{
+   string symbol = GetField(fields, "SYMBOL");
+   string side   = GetField(fields, "SIDE");
+   double entry   = StringToDouble(GetField(fields, "ENTRY"));
+   double sl      = StringToDouble(GetField(fields, "SL"));
+
+   if(!SymbolSelect(symbol, true))
+   {
+      SendError(reqId, "symbol not found");
+      return;
+   }
+   if(entry <= 0 || sl <= 0)
+   {
+      SendError(reqId, "invalid entry/sl");
+      return;
+   }
+
+   ENUM_ORDER_TYPE otype = (side == "sell") ? ORDER_TYPE_SELL : ORDER_TYPE_BUY;
+   double profit = 0.0;
+   if(!OrderCalcProfit(otype, symbol, 1.0, entry, sl, profit))
+   {
+      SendError(reqId, "OrderCalcProfit failed retcode=" + (string)GetLastError());
+      return;
+   }
+
+   double riskPerLot = MathAbs(profit);
+   if(riskPerLot <= 0.0)
+   {
+      SendError(reqId, "risk per lot is zero");
+      return;
+   }
+   SendLine(StringFormat("CMD=OK|REQ_ID=%s|RISK_PER_LOT=%.8f", reqId, riskPerLot));
 }
 
 //+------------------------------------------------------------------+

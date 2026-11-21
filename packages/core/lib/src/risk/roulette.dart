@@ -1,20 +1,30 @@
-/// Roulette (risk ladder / order / volume) per source.
+/// Roulette (risk ladder / volume / order) per source.
 ///
-/// Ported EXACTLY from docs/ROULETTE_SPEC.md and the reference EA
-/// (Nixo_v5.04_TradingModes_AdvancedAnalytics.mq5), with the documented engine
-/// deviations (order roulette win doubles; defaults differ).
+/// Defaults (per owner specification):
+///   - Volume roulette: ON after activation (model = volume).
+///   - Activation threshold: 3% account growth vs stored baseline equity.
+///   - Base risk: 0.50%.
+///   - Maximum step: 50 (step INDEX, not unlimited exposure).
+///   - Volume multiplier per step: 2.0 (each step doubles the previous).
+///   - Independent, configurable maximum risk percentage cap.
+///   - Order roulette: OFF by default (independent of volume roulette).
+///
+/// The step is updated ONLY after a complete trade batch closes and its actual
+/// net result (profit/loss + commission + swap) is known.
 library;
+
+import 'dart:math';
 
 enum RouletteModel { off, volume, order, combined }
 
 class RouletteConfig {
   RouletteConfig({
-    this.enabled = false,
-    this.model = RouletteModel.off,
+    this.enabled = true,
+    this.model = RouletteModel.volume,
     this.baseRiskPct = 0.5,
-    this.maxSteps = 3,
-    this.maxRiskPct = 2.0,
-    this.volumeStepFactor = 1.0,
+    this.maxSteps = 50,
+    this.maxRiskPct = 5.0,
+    this.volumeStepFactor = 2.0,
     this.initialOrderCount = 1,
     this.maxOrderCount = 8,
     this.triggerPct = 3.0,
@@ -34,9 +44,9 @@ class RouletteConfig {
 class RouletteState {
   RouletteState({
     required this.sourceId,
-    this.model = RouletteModel.off,
+    this.model = RouletteModel.volume,
     this.step = 1,
-    this.maxStep = 3,
+    this.maxStep = 50,
     this.activated = false,
   });
 
@@ -45,8 +55,17 @@ class RouletteState {
   int step;
   int maxStep;
   bool activated;
+
+  Map<String, dynamic> toJson() => {
+        'source_id': sourceId,
+        'model': model.name,
+        'step': step,
+        'max_step': maxStep,
+        'activated': activated,
+      };
 }
 
+/// Account-level activation trigger based on baseline equity.
 class AccountRouletteTrigger {
   AccountRouletteTrigger({
     this.baselineEquity = 0,
@@ -100,15 +119,26 @@ class RouletteResult {
   final double? netProfit;
 }
 
+/// Optional persistence hook. The engine wires this to SQLite
+/// (roulette_states table) so state survives restarts.
+typedef RoulettePersist = void Function(RouletteState state);
+
 class RouletteManager {
   RouletteManager({
     required this.config,
     required this.accountTrigger,
+    this.persist,
   });
 
   final RouletteConfig config;
   final AccountRouletteTrigger accountTrigger;
+  final RoulettePersist? persist;
   final Map<String, RouletteState> _states = {};
+
+  /// Restore a persisted state (called by the engine on startup).
+  void restore(String sourceId, RouletteState state) {
+    _states[sourceId] = state;
+  }
 
   RouletteState getState(String sourceId) {
     return _states.putIfAbsent(sourceId, () {
@@ -122,18 +152,32 @@ class RouletteManager {
     });
   }
 
-  /// Volume roulette multiplier = 1 + factor * (step - 1).
+  void _persist(String sourceId) {
+    persist?.call(getState(sourceId));
+  }
+
+  /// Current risk % = base_risk_pct * 2^(step-1), capped at max_risk_pct.
+  double currentRiskPct(String sourceId) {
+    final s = getState(sourceId);
+    if (!s.activated) return config.baseRiskPct;
+    if (config.baseRiskPct <= 0) return 0;
+    final raw = config.baseRiskPct * pow(2, s.step - 1).toDouble();
+    return raw > config.maxRiskPct ? config.maxRiskPct : raw;
+  }
+
+  /// Volume roulette multiplier relative to base risk. Because exposure is
+  /// capped by [currentRiskPct], the multiplier is capped accordingly.
   double volumeMultiplier(String sourceId) {
     final s = getState(sourceId);
     if (!s.activated || (config.model != RouletteModel.volume &&
         config.model != RouletteModel.combined)) {
       return 1.0;
     }
-    return 1.0 + (config.volumeStepFactor < 0 ? 0 : config.volumeStepFactor) *
-        (s.step - 1 < 0 ? 0 : s.step - 1);
+    if (config.baseRiskPct <= 0) return 1.0;
+    return currentRiskPct(sourceId) / config.baseRiskPct;
   }
 
-  /// Order roulette count.
+  /// Order roulette count (OFF by default).
   int orderCount(String sourceId) {
     final s = getState(sourceId);
     if (!s.activated || (config.model != RouletteModel.order &&
@@ -143,15 +187,7 @@ class RouletteManager {
     return s.step;
   }
 
-  /// Current risk % = base_risk_pct * step (capped at max_risk_pct).
-  double currentRiskPct(String sourceId) {
-    final s = getState(sourceId);
-    if (!s.activated) return config.baseRiskPct;
-    final risk = config.baseRiskPct * s.step;
-    return risk > config.maxRiskPct ? config.maxRiskPct : risk;
-  }
-
-  /// Update after a batch closes.
+  /// Update after a complete batch closes. The step changes ONLY here.
   RouletteResult onBatchResult(String sourceId, double netProfit, double riskMoney) {
     final s = getState(sourceId);
     if (!s.activated) {
@@ -170,27 +206,16 @@ class RouletteManager {
     String action = 'flat';
 
     if (!flat && netProfit > 0) {
-      // Win
-      if (config.model == RouletteModel.volume ||
-          config.model == RouletteModel.combined) {
-        s.step = s.step + 1 > s.maxStep ? s.maxStep : s.step + 1;
-      }
-      if (config.model == RouletteModel.order ||
-          config.model == RouletteModel.combined) {
-        // Documented deviation: order win doubles.
-        if (s.step > config.maxOrderCount / 2) {
-          s.step = config.maxOrderCount;
-        } else {
-          s.step = s.step * 2;
-        }
-      }
-      if (s.step > s.maxStep) s.step = s.maxStep;
+      // Win: advance one step (capped at maxStep).
+      s.step = s.step + 1 > s.maxStep ? s.maxStep : s.step + 1;
       action = 'win';
     } else if (!flat && netProfit < 0) {
-      // Loss
+      // Loss: retreat one step (min 1).
       s.step = s.step - 1 < 1 ? 1 : s.step - 1;
       action = 'loss';
     }
+
+    _persist(sourceId);
 
     return RouletteResult(
       sourceId: sourceId,
@@ -204,11 +229,13 @@ class RouletteManager {
 
   void activateSource(String sourceId) {
     getState(sourceId).activated = true;
+    _persist(sourceId);
   }
 
   void deactivateSource(String sourceId) {
     final s = getState(sourceId);
     s.activated = false;
     s.step = 1;
+    _persist(sourceId);
   }
 }

@@ -268,7 +268,7 @@ class SourceProfile {
     this.maxEntryDeviationPoints = 200,
     this.maxSpreadPoints = 100,
     this.maxSlippagePoints = 50,
-    this.riskPercent = 1.0,
+    this.riskPercent = 0.5,
     this.riskMultiplier = 1.0,
     this.fixedCash,
     this.fixedLot,

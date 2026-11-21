@@ -13,7 +13,7 @@ class SlTpConfig {
     this.atrMultiplier = 2.5,
     this.fixedSlPoints,
     this.minSlPoints = 300,
-    this.defaultTpRr = 2.0,
+    this.defaultTpRr = 3.0,
     this.tpPolicy = TpPolicy.signal,
     this.tpLadder = const [1.0, 2.0, 3.0],
     this.tpLotsPercent = const [0.5, 0.5, 0.125],
@@ -125,6 +125,14 @@ class SlTpResolver {
         }
         filled.add('tp_split_ladder');
         break;
+    }
+
+    // Enforce minimum valid SL distance (in points) when a quote is available.
+    if (sl != null && quote != null && quote.point > 0) {
+      final entry = _entryMid(signal, quote);
+      if (entry > 0 && (entry - sl).abs() < config.minSlPoints * quote.point) {
+        return SlTpResult(rejectReason: 'SL too close to entry');
+      }
     }
 
     return SlTpResult(sl: sl, tps: tps, filledFields: filled);

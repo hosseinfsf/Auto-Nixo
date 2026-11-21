@@ -22,6 +22,11 @@ abstract class Executor {
   Future<AccountInfo> account();
   Future<List<String>> symbols();
   Future<List<double>> rates(String symbol, int count);
+
+  /// Authoritative monetary risk per 1.0 lot at the given entry/SL, computed
+  /// by the EA via OrderCalcProfit. Returns null when unavailable (in which
+  /// case the trade must be rejected — never use an approximate lot size).
+  Future<double?> riskPerLot(String symbol, Side side, double entry, double sl);
 }
 
 class ExecutionAck {
@@ -141,15 +146,31 @@ class Pipeline {
       rawText: signal.rawText,
     );
 
-    // Risk per lot (computed by EA via OrderCalcProfit; pipeline asks executor).
-    final riskPerLot = await _riskPerLot(effectiveSignal, quote);
+    // Authoritative risk per lot from MT5 (OrderCalcProfit). Never use an
+    // approximate formula; if MT5 cannot compute it, reject the trade.
+    final entry = effectiveSignal.entryIsMarket
+        ? quote?.mid()
+        : ((effectiveSignal.entryLow ?? 0) +
+                (effectiveSignal.entryHigh ?? effectiveSignal.entryLow ?? 0)) /
+            2;
+    if (entry == null || effectiveSignal.sl == null) {
+      return _decision(signalId, DecisionAction.block, 'missing entry or SL for risk calc');
+    }
+    final riskPerLot = await executor.riskPerLot(
+        signal.symbol, signal.side!, entry, effectiveSignal.sl!);
+    if (riskPerLot == null || riskPerLot <= 0) {
+      return _decision(signalId, DecisionAction.block, 'risk_per_lot_unavailable');
+    }
     final sizing = sizer.size(
       signal: effectiveSignal,
       account: account,
       riskPerLot: riskPerLot,
-      entryPrice: quote?.mid(),
+      entryPrice: entry,
       slPrice: effectiveSignal.sl,
     );
+    if (sizing.lots <= 0) {
+      return _decision(signalId, DecisionAction.block, 'sizing rejected: ${sizing.reason}');
+    }
 
     // 5. Mode / limits.
     final mode = profile?.mode ?? ProfileMode.shadow;
@@ -224,21 +245,6 @@ class Pipeline {
     }
 
     return _decision(signalId, DecisionAction.execute, 'executed');
-  }
-
-  Future<double?> _riskPerLot(ParsedSignal signal, Quote? quote) async {
-    // The EA computes risk per lot via OrderCalcProfit. In the engine we
-    // approximate using price distance and a nominal value; the EA returns the
-    // authoritative value. Here we return a simple estimate so the pipeline
-    // works even before the EA is connected.
-    if (signal.sl == null || quote == null) return null;
-    final entry = signal.entryIsMarket
-        ? quote.mid()
-        : ((signal.entryLow ?? 0) + (signal.entryHigh ?? signal.entryLow ?? 0)) / 2;
-    final distance = (entry - signal.sl!).abs();
-    // Rough: 1 lot risk ≈ distance * 100000 (for FX). For metals/crypto this
-    // is inaccurate; the EA corrects it. Good enough for shadow/sizing.
-    return distance * 100000;
   }
 
   int _magicFor(String inputId) {

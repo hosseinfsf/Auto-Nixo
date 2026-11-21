@@ -99,5 +99,37 @@ void main() {
       expect(decision.action, DecisionAction.skip);
       expect(executor.opened, isEmpty);
     });
+
+    test('blocks when risk-per-lot is unavailable', () async {
+      executor.riskPerLotUnavailable = true;
+      final decision = await pipeline.process(RawMessageEvent(
+        inputId: 'src1',
+        message: {
+          'input_id': 'src1',
+          'message_id': 'm5',
+          'text': 'BUY XAUUSD entry 4050 sl 4030 tp1 4080',
+          'caption': '',
+        },
+      ));
+      expect(decision.action, DecisionAction.block);
+      expect(decision.reason, contains('risk_per_lot_unavailable'));
+      expect(executor.opened, isEmpty);
+    });
+
+    test('blocks when sizing is rejected (below broker min)', () async {
+      executor.riskPerLotForSymbol = {'XAUUSD': 5000000}; // 50/5e6 = 1e-5 lots
+      final decision = await pipeline.process(RawMessageEvent(
+        inputId: 'src1',
+        message: {
+          'input_id': 'src1',
+          'message_id': 'm6',
+          'text': 'BUY XAUUSD entry 4050 sl 4030 tp1 4080',
+          'caption': '',
+        },
+      ));
+      expect(decision.action, DecisionAction.block);
+      expect(decision.reason, contains('sizing rejected'));
+      expect(executor.opened, isEmpty);
+    });
   });
 }
