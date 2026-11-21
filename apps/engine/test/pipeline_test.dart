@@ -25,6 +25,20 @@ void main() {
         ),
       },
     );
+    // Create a profile with auto mode for src1
+    db.upsertProfile('p1', {
+      'id': 'p1',
+      'name': 'test profile',
+      'mode': 'auto',
+      'risk_percent': 0.5,
+    });
+    db.upsertInput({
+      'id': 'src1',
+      'type': 'telegram_source',
+      'name': 'src1',
+      'enabled': true,
+      'profile_id': 'p1',
+    });
     pipeline = Pipeline(
       db: db,
       executor: executor,
@@ -45,6 +59,19 @@ void main() {
   tearDown(() => db.close());
 
   group('pipeline', () {
+    test('defaults to shadow mode for unknown input', () async {
+      final decision = await pipeline.process(RawMessageEvent(
+        inputId: 'unknown_input',
+        message: {
+          'input_id': 'unknown_input',
+          'message_id': 'm0',
+          'text': 'BUY XAUUSD entry 4050 sl 4030 tp1 4080',
+          'caption': '',
+          'timestamp': DateTime.now().toUtc().toIso8601String(),
+        },
+      ));
+      expect(decision.action, DecisionAction.shadow);
+    });
     test('executes a valid signal', () async {
       final decision = await pipeline.process(RawMessageEvent(
         inputId: 'src1',

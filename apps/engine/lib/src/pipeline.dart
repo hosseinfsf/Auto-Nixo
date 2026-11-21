@@ -208,7 +208,7 @@ class Pipeline {
     }
 
     // 5. Mode / limits.
-    final mode = profile?.mode ?? ProfileMode.auto;
+    final mode = profile?.mode ?? ProfileMode.shadow;
     if (mode == ProfileMode.off) {
       return _decision(signalId, DecisionAction.skip, 'mode=off');
     }
