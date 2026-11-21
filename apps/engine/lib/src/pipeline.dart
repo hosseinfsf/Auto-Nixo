@@ -106,7 +106,10 @@ class Pipeline {
       return _decision('', DecisionAction.skip, 'parse_failed: ${parseResult.error}');
     }
     final signal = parseResult.signal!;
-    final signalId = 'sig_${DateTime.now().microsecondsSinceEpoch}';
+    // Deterministic signalId from (input_id, message_id, edit_version) for idempotency.
+    final editVersion = msg['edit_version'] as int? ?? 0;
+    final messageId = msg['message_id']?.toString() ?? '';
+    final signalId = 'sig_${inputId}_${messageId}_$editVersion';
     db.insertSignal({
       'id': signalId,
       'input_id': inputId,
