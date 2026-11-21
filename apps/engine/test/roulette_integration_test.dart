@@ -26,6 +26,19 @@ void main() {
         ),
       },
     );
+    db.upsertProfile('p1', {
+      'id': 'p1',
+      'name': 'test profile',
+      'mode': 'auto',
+      'risk_percent': 0.5,
+    });
+    db.upsertInput({
+      'id': 'src1',
+      'type': 'telegram_source',
+      'name': 'src1',
+      'enabled': true,
+      'profile_id': 'p1',
+    });
     roulette = RouletteManager(
       config: RouletteConfig(),
       accountTrigger: AccountRouletteTrigger(

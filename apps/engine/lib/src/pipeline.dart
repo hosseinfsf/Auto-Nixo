@@ -171,6 +171,16 @@ class Pipeline {
       return _decision(signalId, DecisionAction.skip, slTpResult.rejectReason!);
     }
 
+    // Build a per-source Sizer from the profile's risk settings.
+    final sizingConfig = SizingConfig(
+      mode: SizeMode.riskPercent,
+      riskPercent: profile?.riskPercent ?? 0.25,
+      riskMultiplier: profile?.riskMultiplier ?? 1.0,
+      minLot: profile?.minLot ?? 0.01,
+      maxLot: profile?.maxLot ?? 10.0,
+    );
+    final sourceSizer = Sizer(config: sizingConfig);
+
     // Build an effective signal with resolved SL/TP.
     final effectiveSignal = ParsedSignal(
       symbol: signal.symbol,
