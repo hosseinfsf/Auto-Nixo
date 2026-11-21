@@ -7,7 +7,7 @@ library;
 import 'dart:async';
 import 'dart:convert';
 
-import 'package:shelf/shelf.dart';
+import 'package:shelf/shelf.dart' as shelf;
 import 'package:shelf_router/shelf_router.dart';
 
 import 'db.dart';
@@ -74,7 +74,7 @@ class HttpApi {
           headers: {'content-type': 'application/json'});
     });
 
-    final handler = const Pipeline().addMiddleware(_logMiddleware()).addHandler(_router.call);
+    final handler = shelf.Pipeline().addMiddleware(_logMiddleware()).addHandler(_router.call);
     _server = await serve(handler, host, port);
   }
 
