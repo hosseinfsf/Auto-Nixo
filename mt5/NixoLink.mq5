@@ -89,13 +89,17 @@ void TryReconnect()
 
    // AUTH handshake
    string auth = StringFormat("CMD=AUTH|TOKEN=%s\n", InpAuthToken);
-   SocketSend(g_socket, auth);
+   uchar authBuf[];
+   StringToCharArray(auth, authBuf);
+   SocketSend(g_socket, authBuf, ArraySize(authBuf));
 }
 
 //+------------------------------------------------------------------+
 void SendHeartbeat()
 {
-   SocketSend(g_socket, "CMD=HB\n");
+   uchar buf[];
+   StringToCharArray("CMD=HB\n", buf);
+   SocketSend(g_socket, buf, ArraySize(buf));
 }
 
 //+------------------------------------------------------------------+
@@ -105,9 +109,9 @@ void ReceiveData()
    uint len = SocketIsReadable(g_socket);
    if(len == 0)
       return;
-   if(!SocketReceive(g_socket, buffer, len))
+   int received = SocketRead(g_socket, buffer, len, 100);
+   if(received <= 0)
       return;
-
    string data = CharArrayToString(buffer, 0, len);
    g_recv_buf += data;
 
@@ -123,7 +127,9 @@ void ReceiveData()
 //+------------------------------------------------------------------+
 void HandleLine(string line)
 {
-   line = StringTrimLeft(StringTrimRight(line));
+   string trimmed = StringTrimLeft(line);
+   trimmed = StringTrimRight(trimmed);
+   line = trimmed;
    if(line == "")
       return;
 
@@ -187,10 +193,26 @@ string GetField(string &fields[][2], string key)
 }
 
 //+------------------------------------------------------------------+
+string ArrayToString(double &arr[], string sep)
+{
+   string out = "";
+   for(int i = 0; i < ArraySize(arr); i++)
+   {
+      if(out != "") out += sep;
+      out += DoubleToString(arr[i], _Digits);
+   }
+   return out;
+}
+
+//+------------------------------------------------------------------+
 void SendLine(string line)
 {
    if(g_socket != INVALID_HANDLE && SocketIsConnected(g_socket))
-      SocketSend(g_socket, line + "\n");
+   {
+      uchar buf[];
+      StringToCharArray(line + "\n", buf);
+      SocketSend(g_socket, buf, ArraySize(buf));
+   }
 }
 
 //+------------------------------------------------------------------+
@@ -258,9 +280,16 @@ void HandleOpen(string &fields[][2], string reqId)
    if(deviation <= 0) deviation = 10;
 
    bool ok = false;
+   double tp1 = 0.0;
+   if(ArraySize(tps) > 0)
+      tp1 = tps[0];
+
    if(otype == ORDER_TYPE_BUY || otype == ORDER_TYPE_SELL)
    {
-      ok = g_trade.Buy(lots, symbol, 0.0, sl, tps[0], comment, magic, cid);
+      if(otype == ORDER_TYPE_BUY)
+         ok = g_trade.Buy(lots, symbol, 0.0, sl, tp1, comment);
+      else
+         ok = g_trade.Sell(lots, symbol, 0.0, sl, tp1, comment);
    }
    else
    {
@@ -269,7 +298,14 @@ void HandleOpen(string &fields[][2], string reqId)
          SendError(reqId, "missing entry for pending order");
          return;
       }
-      ok = g_trade.Order(otype, lots, symbol, entry, sl, tps[0], 0, 0, comment, magic, cid);
+      if(otype == ORDER_TYPE_BUY_LIMIT)
+         ok = g_trade.BuyLimit(lots, entry, symbol, sl, tp1, ORDER_TIME_GTC, 0, comment);
+      else if(otype == ORDER_TYPE_SELL_LIMIT)
+         ok = g_trade.SellLimit(lots, entry, symbol, sl, tp1, ORDER_TIME_GTC, 0, comment);
+      else if(otype == ORDER_TYPE_BUY_STOP)
+         ok = g_trade.BuyStop(lots, entry, symbol, sl, tp1, ORDER_TIME_GTC, 0, comment);
+      else if(otype == ORDER_TYPE_SELL_STOP)
+         ok = g_trade.SellStop(lots, entry, symbol, sl, tp1, ORDER_TIME_GTC, 0, comment);
    }
 
    if(ok)
@@ -309,7 +345,8 @@ void HandleModify(string &fields[][2], string reqId)
    if(tpsS != "")
    {
       string tpParts[];
-      if(StringSplit(tpsS, ',', tpParts) > 0)
+      int tn = StringSplit(tpsS, ',', tpParts);
+      if(tn > 0)
          tp = StringToDouble(tpParts[0]);
    }
 
@@ -397,7 +434,7 @@ void SendSymbolInfo(string &fields[][2], string reqId)
    int digits = (int)SymbolInfoInteger(symbol, SYMBOL_DIGITS);
    double tickSize = SymbolInfoDouble(symbol, SYMBOL_TRADE_TICK_SIZE);
    int stopsLevel = (int)SymbolInfoInteger(symbol, SYMBOL_TRADE_STOPS_LEVEL);
-   bool marketOpen = (bool)SymbolInfoInteger(symbol, SYMBOL_TRADE_MODE) != SYMBOL_TRADE_MODE_CLOSED;
+   bool marketOpen = (bool)SymbolInfoInteger(symbol, SYMBOL_TRADE_MODE) != SYMBOL_TRADE_MODE_DISABLED;
 
    SendLine(StringFormat(
       "CMD=SYMBOL_INFO|REQ_ID=%s|SYMBOL=%s|BID=%.8f|ASK=%.8f|SPREAD=%d|POINT=%.8f|DIGITS=%d|TICK_SIZE=%.8f|STOPS_LEVEL=%d|MARKET_OPEN=%d",
@@ -420,8 +457,8 @@ void SendAccountSnapshot(string reqId = "")
    else if(tm == ACCOUNT_TRADE_MODE_CONTEST) tradeMode = "contest";
 
    string marginMode = "hedging";
-   if(AccountInfoInteger(ACCOUNT_MARGIN_MODE) == ACCOUNT_MARGIN_MODE_NETTING)
-      marginMode = "netting";
+      if(AccountInfoInteger(ACCOUNT_MARGIN_MODE) == ACCOUNT_MARGIN_MODE_RETAIL_NETTING)
+         marginMode = "netting";
 
    string serverTime = TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS);
 
@@ -446,7 +483,7 @@ void SendPositions(string reqId)
       double tp = PositionGetDouble(POSITION_TP);
       double profit = PositionGetDouble(POSITION_PROFIT);
       long magic = PositionGetInteger(POSITION_MAGIC);
-      string type = (POSITION_TYPE)PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY ? "buy" : "sell";
+      string type = (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY) ? "buy" : "sell";
       string entry = StringFormat("%s|%s|%.2f|%.5f|%.5f|%.5f|%.2f|%d", symbol, type, volume, priceOpen, sl, tp, profit, magic);
       if(out != "") out += ";";
       out += entry;
@@ -553,7 +590,7 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
             SendLine(StringFormat("CMD=POSITION_CLOSED|SYMBOL=%s|PROFIT=%.2f", symbol, profit));
       }
    }
-   else if(trans.type == TRADE_TRANSACTION_ORDER_DELETE || trans.type == TRADE_TRANSACTION_ORDER_CANCEL)
+   else if(trans.type == TRADE_TRANSACTION_ORDER_DELETE)
    {
       SendLine(StringFormat("CMD=REJECT|ORDER_ID=%d|RETCODE=%d", trans.order, result.retcode));
    }

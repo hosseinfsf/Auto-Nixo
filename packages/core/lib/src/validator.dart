@@ -9,7 +9,7 @@ class ValidatorConfig {
   ValidatorConfig({
     this.maxEntryDeviationPoints = 200,
     this.maxSpreadPoints = 100,
-    this.maxSignalAgeSeconds = 300,
+    this.maxSignalAgeSeconds = 180,
     this.minRr = 0.5,
     this.requireSl = true,
     this.requireSide = true,

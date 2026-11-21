@@ -49,13 +49,15 @@ class SlTpResult {
 }
 
 class SlTpResolver {
-  SlTpResolver({SlTpConfig? config, this.atr})
+  SlTpResolver({SlTpConfig? config, this.atr, this.tpRr})
       : config = config ?? SlTpConfig();
 
   final SlTpConfig config;
   final double? atr; // current ATR value
+  final double? tpRr; // per-source RR override
 
-  SlTpResult resolve(ParsedSignal signal, Quote? quote) {
+  SlTpResult resolve(ParsedSignal signal, Quote? quote, {double? tpRr}) {
+    final effectiveRr = tpRr ?? this.tpRr ?? config.defaultTpRr;
     final filled = <String>[];
     double? sl;
     final tps = <double>[];
@@ -104,18 +106,18 @@ class SlTpResolver {
           tps.addAll(signal.tps);
         } else {
           // Default R:R fallback.
-          final tp = _tpFromRr(signal, quote, config.defaultTpRr);
+          final tp = _tpFromRr(signal, quote, effectiveRr);
           if (tp != null) {
             tps.add(tp);
-            filled.add('tp_default_1:${config.defaultTpRr.toStringAsFixed(1)}');
+            filled.add('tp_default_1:${effectiveRr.toStringAsFixed(1)}');
           }
         }
         break;
       case TpPolicy.defaultRR:
-        final tp = _tpFromRr(signal, quote, config.defaultTpRr);
+        final tp = _tpFromRr(signal, quote, effectiveRr);
         if (tp != null) {
           tps.add(tp);
-          filled.add('tp_default_1:${config.defaultTpRr.toStringAsFixed(1)}');
+          filled.add('tp_default_1:${effectiveRr.toStringAsFixed(1)}');
         }
         break;
       case TpPolicy.splitLadder:

@@ -15,6 +15,10 @@ class _SourcesPageState extends State<SourcesPage> {
       'enabled': true,
       'mode': 'SHADOW',
       'risk': '1.0%',
+      'tp_policy': 'signal',
+      'sl_policy': 'signal',
+      'tp_rr': 3.0,
+      'validity_seconds': 180,
     },
     {
       'name': 'signals_fa',
@@ -22,6 +26,10 @@ class _SourcesPageState extends State<SourcesPage> {
       'enabled': true,
       'mode': 'CONFIRM',
       'risk': '0.5%',
+      'tp_policy': 'defaultRR',
+      'sl_policy': 'signal',
+      'tp_rr': 3.0,
+      'validity_seconds': 180,
     },
   ];
 
@@ -59,8 +67,11 @@ class _SourcesPageState extends State<SourcesPage> {
                       children: [
                         _field('Mode', s['mode'].toString()),
                         _field('Risk %', s['risk'].toString()),
+                        _field('TP Policy', s['tp_policy'].toString()),
+                        _field('SL Policy', s['sl_policy'].toString()),
+                        _field('TP RR', s['tp_rr'].toString()),
+                        _field('Validity', '${s['validity_seconds']}s'),
                         _field('Allowed symbols', 'Any'),
-                        _field('Validity', '300s'),
                         _field('Roulette', 'OFF'),
                       ],
                     ),

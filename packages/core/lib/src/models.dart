@@ -262,7 +262,7 @@ class SourceProfile {
     this.allowedSymbols = const [],
     this.symbolAliases = const {},
     this.tradingHours,
-    this.validitySeconds = 300,
+    this.validitySeconds = 180,
     this.maxEntryDeviationPoints = 200,
     this.maxSpreadPoints = 100,
     this.maxSlippagePoints = 50,
@@ -278,6 +278,7 @@ class SourceProfile {
     this.consecutiveLossPause = 3,
     this.slPolicy = SlPolicy.signal,
     this.tpPolicy = TpPolicy.signal,
+    this.tpRr = 3.0,
     this.rouletteEnabled = false,
     this.imageTimeoutSeconds = 10,
     this.imageAutoExecute = true,
@@ -307,6 +308,7 @@ class SourceProfile {
   final int consecutiveLossPause;
   final SlPolicy slPolicy;
   final TpPolicy tpPolicy;
+  final double tpRr;
   final bool rouletteEnabled;
   final int imageTimeoutSeconds;
   final bool imageAutoExecute;
@@ -336,6 +338,7 @@ class SourceProfile {
         'consecutive_loss_pause': consecutiveLossPause,
         'sl_policy': slPolicy.name,
         'tp_policy': tpPolicy.name,
+        'tp_rr': tpRr,
         'roulette_enabled': rouletteEnabled,
         'image_timeout_seconds': imageTimeoutSeconds,
         'image_auto_execute': imageAutoExecute,

@@ -110,6 +110,12 @@ class TelegramSource implements InputAdapter {
     _messagesToday++;
     _status = 'online';
 
+    // Use the original Telegram message timestamp (TDLib 'date' field, Unix
+    // seconds) instead of local processing time, so signal expiry is accurate.
+    final msgDate = message['date'] as int?;
+    final originalTs = msgDate != null
+        ? DateTime.fromMillisecondsSinceEpoch(msgDate * 1000, isUtc: true)
+        : DateTime.now().toUtc();
     final raw = {
       'input_id': inputId,
       'message_id': messageId,
@@ -121,7 +127,7 @@ class TelegramSource implements InputAdapter {
       'is_reply': message['reply_to_message_id'] != null,
       'reply_to_message_id': message['reply_to_message_id']?.toString(),
       'is_album': message['media_album_id'] != null,
-      'timestamp': DateTime.now().toIso8601String(),
+      'timestamp': originalTs.toIso8601String(),
     };
 
     // Dedupe check (insert OR IGNORE).

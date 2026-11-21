@@ -40,7 +40,7 @@ class ExecutionAck {
 
 class PipelineConfig {
   PipelineConfig({
-    this.validitySeconds = 300,
+    this.validitySeconds = 180,
     this.requireSl = true,
   });
 
@@ -114,6 +114,33 @@ class Pipeline {
       'json': jsonEncode(signal.toJson()),
     });
 
+    // 2b. Signal expiry check (per-source configurable, default 180s).
+    final validitySeconds = profile?.validitySeconds ?? config.validitySeconds;
+    final msgTimestamp = msg['timestamp'] as String?;
+    if (msgTimestamp != null) {
+      try {
+        final msgTime = DateTime.parse(msgTimestamp);
+        final age = DateTime.now().toUtc().difference(msgTime.toUtc()).inSeconds;
+        if (age > validitySeconds) {
+          db.insertDecision({
+            'signal_id': signalId,
+            'action': 'skip',
+            'reason': 'signal expired (${age}s > ${validitySeconds}s)',
+          });
+          return _decision(signalId, DecisionAction.skip,
+              'signal expired (${age}s > ${validitySeconds}s)');
+        }
+      } catch (_) {
+        // Invalid timestamp — reject rather than silently treat as fresh.
+        db.insertDecision({
+          'signal_id': signalId,
+          'action': 'skip',
+          'reason': 'invalid timestamp',
+        });
+        return _decision(signalId, DecisionAction.skip, 'invalid timestamp');
+      }
+    }
+
     // 3. Validate.
     final quote = await executor.quote(signal.symbol);
     final validation = validator.validate(signal, quote);
@@ -129,7 +156,14 @@ class Pipeline {
 
     // 4. Risk / sizing.
     final account = await executor.account();
-    final slTpResult = slTp.resolve(signal, quote);
+    // Build a per-source SlTpResolver from the profile's TP/SL policy.
+    final slTpConfig = SlTpConfig(
+      slPolicy: profile?.slPolicy ?? SlPolicy.signal,
+      tpPolicy: profile?.tpPolicy ?? TpPolicy.signal,
+      defaultTpRr: profile?.tpRr ?? 3.0,
+    );
+    final sourceSlTp = SlTpResolver(config: slTpConfig, tpRr: profile?.tpRr);
+    final slTpResult = sourceSlTp.resolve(signal, quote, tpRr: profile?.tpRr);
     if (slTpResult.rejectReason != null) {
       return _decision(signalId, DecisionAction.skip, slTpResult.rejectReason!);
     }
@@ -276,6 +310,15 @@ class Pipeline {
         (k, v) => MapEntry(k.toString(), v.toString()),
       ),
       validitySeconds: json['validity_seconds'] as int? ?? config.validitySeconds,
+      slPolicy: SlPolicy.values.firstWhere(
+        (m) => m.name == json['sl_policy'],
+        orElse: () => SlPolicy.signal,
+      ),
+      tpPolicy: TpPolicy.values.firstWhere(
+        (m) => m.name == json['tp_policy'],
+        orElse: () => TpPolicy.signal,
+      ),
+      tpRr: (json['tp_rr'] as num? ?? 3.0).toDouble(),
       riskPercent: (json['risk_percent'] as num? ?? 1.0).toDouble(),
       riskMultiplier: (json['risk_multiplier'] as num? ?? 1.0).toDouble(),
       minLot: (json['min_lot'] as num? ?? 0.01).toDouble(),
