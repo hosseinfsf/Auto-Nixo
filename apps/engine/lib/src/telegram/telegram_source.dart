@@ -5,7 +5,6 @@
 library;
 
 import 'dart:async';
-import 'dart:convert';
 
 import '../db.dart';
 import 'tdlib_client.dart';

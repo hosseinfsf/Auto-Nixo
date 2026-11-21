@@ -6,12 +6,15 @@ library;
 
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
-import 'package:shelf/shelf.dart' as shelf;
+import 'package:shelf/shelf.dart';
+import 'package:shelf/shelf_io.dart' as shelf_io;
 import 'package:shelf_router/shelf_router.dart';
 
 import 'db.dart';
-import 'pipeline.dart';
+import 'pipeline.dart' as pipe;
+import 'telegram/telegram_source.dart';
 
 class HttpApi {
   HttpApi({
@@ -28,7 +31,7 @@ class HttpApi {
   final int port;
   final String token;
   final Database db;
-  final Pipeline pipeline;
+  final pipe.Pipeline pipeline;
   final String webhookToken;
   final String webhookPassphrase;
 
@@ -74,8 +77,8 @@ class HttpApi {
           headers: {'content-type': 'application/json'});
     });
 
-    final handler = shelf.Pipeline().addMiddleware(_logMiddleware()).addHandler(_router.call);
-    _server = await serve(handler, host, port);
+    final handler = Pipeline().addMiddleware(_logMiddleware()).addHandler(_router.call);
+    _server = await shelf_io.serve(handler, host, port);
   }
 
   void Function()? _killCallback;

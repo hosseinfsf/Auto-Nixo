@@ -20,9 +20,8 @@ class TextParser {
   TextParser({
     SymbolMapping? symbolMapping,
     this.quote,
-  }) : _symbolMapping = symbolMapping ?? SymbolMapping();
+  });
 
-  final SymbolMapping _symbolMapping;
   final Quote? quote;
 
   /// Parse a normalized message into a [ParsedSignal].
@@ -95,6 +94,9 @@ class TextParser {
       'CRUDE': 'WTI',
       'BITCOIN': 'BTCUSD',
       'ETHEREUM': 'ETHUSD',
+      'طلا': 'XAUUSD',
+      'نقره': 'XAGUSD',
+      'بیتکوین': 'BTCUSD',
     };
     for (final e in generic.entries) {
       if (upper.contains(e.key)) return e.value;
@@ -155,7 +157,10 @@ class TextParser {
       }
     }
 
-    // No marker: use the first number that is not obviously an SL/TP.
+    // No marker: if the message explicitly says market/now, treat as market entry.
+    if (_containsMarket(text)) {
+      return null;
+    }
     // Heuristic: first number is often the entry.
     return (numbers.first, null);
   }

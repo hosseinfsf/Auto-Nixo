@@ -14,14 +14,14 @@ import 'package:ffi/ffi.dart';
 
 typedef _TdJsonCreate = Pointer<Void> Function();
 typedef _TdJsonCreateC = Pointer<Void> Function();
-typedef _TdJsonSend = Void Function(Pointer<Void>, Pointer<Utf8>);
-typedef _TdJsonSendC = void Function(Pointer<Void>, Pointer<Utf8>);
+typedef _TdJsonSend = void Function(Pointer<Void>, Pointer<Utf8>);
+typedef _TdJsonSendC = Void Function(Pointer<Void>, Pointer<Utf8>);
 typedef _TdJsonReceive = Pointer<Utf8> Function(Pointer<Void>);
 typedef _TdJsonReceiveC = Pointer<Utf8> Function(Pointer<Void>);
 typedef _TdJsonExecute = Pointer<Utf8> Function(Pointer<Void>, Pointer<Utf8>);
 typedef _TdJsonExecuteC = Pointer<Utf8> Function(Pointer<Void>, Pointer<Utf8>);
-typedef _TdJsonDestroy = Void Function(Pointer<Void>);
-typedef _TdJsonDestroyC = void Function(Pointer<Void>);
+typedef _TdJsonDestroy = void Function(Pointer<Void>);
+typedef _TdJsonDestroyC = Void Function(Pointer<Void>);
 
 /// A single update received from TDLib.
 class TdUpdate {

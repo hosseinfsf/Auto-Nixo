@@ -2,18 +2,29 @@
 library;
 
 import 'dart:convert';
+import 'dart:ffi';
 import 'dart:io';
 
-import 'package:sqlite3/sqlite3.dart';
+import 'package:sqlite3/open.dart' as sqlite3_open;
+import 'package:sqlite3/sqlite3.dart' as sqlite3;
 
 class Database {
   Database(this._db);
 
-  final Database _db;
+  final sqlite3.Database _db;
 
   static Database open(String path) {
+    // On Windows, prefer a bundled sqlite3.dll; fall back to the OS-provided
+    // winsqlite3.dll when no bundled copy is available (common in dev/CI).
+    if (Platform.isWindows) {
+      try {
+        DynamicLibrary.open('sqlite3.dll');
+      } catch (_) {
+        sqlite3_open.open.overrideForAll(() => DynamicLibrary.open('winsqlite3.dll'));
+      }
+    }
     Directory(File(path).parent.path).createSync(recursive: true);
-    final db = sqlite3.open(path);
+    final db = sqlite3.sqlite3.open(path);
     db.execute('PRAGMA journal_mode=WAL;');
     db.execute('PRAGMA foreign_keys=ON;');
     db.execute('PRAGMA synchronous=NORMAL;');
@@ -175,7 +186,7 @@ class Database {
 
   List<Map<String, dynamic>> listInputs() {
     final rows = _db.select('SELECT * FROM inputs');
-    return rows.map((r) => r.toMap()).toList();
+    return rows.map((r) => Map<String, dynamic>.from(r)).toList();
   }
 
   void upsertProfile(String id, Map<String, dynamic> json) {
@@ -297,7 +308,7 @@ class Database {
 
   List<Map<String, dynamic>> listRouletteStates() {
     final rows = _db.select('SELECT * FROM roulette_states');
-    return rows.map((r) => r.toMap()).toList();
+    return rows.map((r) => Map<String, dynamic>.from(r)).toList();
   }
 
   void audit(String level, String message) {

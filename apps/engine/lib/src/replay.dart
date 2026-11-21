@@ -9,19 +9,20 @@ import 'package:nixo_core/nixo_core.dart';
 
 import 'db.dart';
 import 'pipeline.dart';
+import 'telegram/telegram_source.dart';
 
 class FakeExecutor implements Executor {
   FakeExecutor({
     this.quoteForSymbol = const {},
-    this.riskPerLotForSymbol = const {},
+    Map<String, double> riskPerLotForSymbol = const {},
     this.defaultRiskPerLot = 1000.0,
-  });
+  }) : riskPerLotForSymbol = riskPerLotForSymbol;
 
   final Map<String, Quote> quoteForSymbol;
 
   /// Authoritative risk-per-lot per symbol; falls back to [defaultRiskPerLot]
   /// (a test-only value — never used for live trading).
-  final Map<String, double> riskPerLotForSymbol;
+  Map<String, double> riskPerLotForSymbol;
   final double defaultRiskPerLot;
   final List<OrderPlan> opened = [];
   final List<String> closed = [];

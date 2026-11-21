@@ -4,8 +4,6 @@
 /// loudly.
 library;
 
-import '../models.dart';
-
 class GlobalLimits {
   GlobalLimits({
     this.maxOpenRiskPct = 5.0,

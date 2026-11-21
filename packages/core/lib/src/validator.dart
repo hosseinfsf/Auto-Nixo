@@ -80,6 +80,11 @@ class SignalValidator {
         reasons.add('zero risk');
       } else {
         for (final tp in signal.tps) {
+          // Only enforce R:R for TPs that are on the profit side of the entry.
+          final onProfitSide = signal.side == Side.buy
+              ? tp > entryMid
+              : tp < entryMid;
+          if (!onProfitSide) continue;
           final reward = (tp - entryMid).abs();
           final rr = reward / risk;
           if (rr < config.minRr) {

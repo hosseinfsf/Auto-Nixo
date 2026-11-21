@@ -7,7 +7,6 @@ library;
 
 import 'dart:async';
 import 'dart:io';
-import 'dart:math';
 
 import 'package:nixo_core/nixo_core.dart';
 
@@ -81,7 +80,7 @@ class Mt5LinkServer implements Executor {
     }
     if (!_authenticated) return;
 
-    if (cmd == Evt.heartbeat) {
+    if (cmd == Cmd.heartbeat) {
       _send(Mt5Message({'CMD': Cmd.heartbeat}));
       return;
     }

@@ -1,8 +1,6 @@
 /// Core domain models for NIXO LITE.
 library;
 
-import 'dart:convert';
-
 /// Side of a trade.
 enum Side { buy, sell }
 

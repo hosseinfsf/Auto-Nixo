@@ -47,9 +47,12 @@ class Classifier {
     }
 
     // 1. Deleted / empty images with no text -> noise.
-    // 2. Management updates first (they act on existing signals).
+    // 2. Management updates first (they act on existing signals), but only when
+    //    the message is not clearly a new signal (avoids false positives where
+    //    a signal mentions "حد ضرر" / "sl").
+    final signalScore = _signalScore(text);
     final mgmt = _classifyManagement(text);
-    if (mgmt != null) {
+    if (mgmt != null && signalScore < 2) {
       return ClassificationResult(
         kind: SignalKind.management,
         action: mgmt,
@@ -67,7 +70,6 @@ class Classifier {
     }
 
     // 4. Signal detection.
-    final signalScore = _signalScore(text);
     if (signalScore >= 2) {
       return ClassificationResult(kind: SignalKind.signal, confidence: 0.9);
     }

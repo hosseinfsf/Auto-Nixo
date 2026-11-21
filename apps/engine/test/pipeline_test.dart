@@ -2,6 +2,7 @@ import 'package:nixo_core/nixo_core.dart';
 import 'package:nixo_engine/src/db.dart';
 import 'package:nixo_engine/src/pipeline.dart';
 import 'package:nixo_engine/src/replay.dart';
+import 'package:nixo_engine/src/telegram/telegram_source.dart';
 import 'package:test/test.dart';
 
 void main() {

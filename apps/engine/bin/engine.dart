@@ -14,7 +14,7 @@ import 'package:nixo_engine/src/http_api.dart';
 import 'package:nixo_engine/src/input_registry.dart';
 import 'package:nixo_engine/src/mt5/link_server.dart';
 import 'package:nixo_engine/src/pipeline.dart';
-import 'package:nixo_engine/src/proxy/proxy_manager.dart';
+
 import 'package:nixo_engine/src/telegram/tdlib_client.dart';
 import 'package:nixo_engine/src/telegram/telegram_source.dart';
 import 'package:nixo_engine/src/watchdog.dart';

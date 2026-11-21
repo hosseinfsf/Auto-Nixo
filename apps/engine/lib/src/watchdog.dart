@@ -20,7 +20,6 @@ class Watchdog {
   final Duration interval;
 
   Timer? _timer;
-  bool _armed = false;
 
   void start() {
     _timer = Timer.periodic(interval, (_) => _check());
@@ -52,14 +51,11 @@ class Watchdog {
 
   /// Prevent sleep while armed (Windows only).
   void arm() {
-    _armed = true;
     if (Platform.isWindows) {
       // SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED)
       // via FFI. Implemented in a platform helper; stubbed here.
     }
   }
 
-  void disarm() {
-    _armed = false;
-  }
+  void disarm() {}
 }

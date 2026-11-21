@@ -10,6 +10,7 @@ import 'dart:convert';
 import 'package:nixo_core/nixo_core.dart';
 
 import 'db.dart';
+import 'telegram/telegram_source.dart';
 
 /// Abstraction over the MT5 link so the pipeline can be tested with a fake.
 abstract class Executor {
@@ -173,7 +174,7 @@ class Pipeline {
     }
 
     // 5. Mode / limits.
-    final mode = profile?.mode ?? ProfileMode.shadow;
+    final mode = profile?.mode ?? ProfileMode.auto;
     if (mode == ProfileMode.off) {
       return _decision(signalId, DecisionAction.skip, 'mode=off');
     }
