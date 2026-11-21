@@ -34,6 +34,10 @@ class SignalValidator {
     DateTime? now,
     bool marketOpen = true,
   }) {
+    // Fail closed: market entry without a quote is invalid.
+    if (signal.entryIsMarket && quote == null) {
+      return ValidationResult(valid: false, reasons: ['market entry requires a live quote']);
+    }
     final reasons = <String>[];
 
     // Symbol.
@@ -78,13 +82,17 @@ class SignalValidator {
       final risk = (signal.sl! - entryMid).abs();
       if (risk <= 0) {
         reasons.add('zero risk');
+        return ValidationResult(valid: false, reasons: reasons);
       } else {
         for (final tp in signal.tps) {
-          // Only enforce R:R for TPs that are on the profit side of the entry.
+          // Check TP side for EVERY TP: buy TP > entry, sell TP < entry.
           final onProfitSide = signal.side == Side.buy
               ? tp > entryMid
               : tp < entryMid;
-          if (!onProfitSide) continue;
+          if (!onProfitSide) {
+            reasons.add('TP on wrong side of entry');
+            continue;
+          }
           final reward = (tp - entryMid).abs();
           final rr = reward / risk;
           if (rr < config.minRr) {
