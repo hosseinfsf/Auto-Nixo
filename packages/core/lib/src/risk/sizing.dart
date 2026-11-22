@@ -1,4 +1,4 @@
-/// Position sizing.
+﻿/// Position sizing.
 ///
 /// Default mode: RISK PERCENTAGE OF ACCOUNT EQUITY (base risk 0.50%).
 /// Fixed-lot sizing is NOT part of the normal workflow; it exists only as a
@@ -10,6 +10,8 @@
 /// by MT5 and clamp it. If the computed volume falls below the broker minimum
 /// or above the maximum, the trade is REJECTED (never silently adjusted).
 library;
+
+import 'dart:math' as math;
 
 import '../models.dart';
 
@@ -119,7 +121,27 @@ class Sizer {
 
   double _roundDownToStep(double value, double step) {
     if (step <= 0) return value;
-    final n = (value / step).floorToDouble();
-    return n * step;
+    // Decimal-safe rounding-down using integer units of `step` to avoid
+    // floating-point drift (e.g. 0.35000000000000003).
+    final precision = _decimalPlaces(step);
+    final factor = math.pow(10, precision).toDouble();
+    final stepUnits = (step * factor).round();
+    if (stepUnits <= 0) return value;
+    final valueUnits = (value * factor).floor();
+    final steps = valueUnits ~/ stepUnits;
+    return (steps * stepUnits) / factor;
+  }
+
+  int _decimalPlaces(double x) {
+    final s = x.toString();
+    if (s.contains('e') || s.contains('E')) {
+      final parts = s.toLowerCase().split('e');
+      final mantissa = parts[0];
+      final exp = int.tryParse(parts[1]) ?? 0;
+      final dec = mantissa.contains('.') ? mantissa.split('.').last.length : 0;
+      return (dec - exp).clamp(0, 20);
+    }
+    if (!s.contains('.')) return 0;
+    return s.split('.').last.length;
   }
 }
