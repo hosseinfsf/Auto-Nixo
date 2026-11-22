@@ -209,7 +209,7 @@ class Pipeline {
     if (riskPerLot == null || riskPerLot <= 0) {
       return _decision(signalId, DecisionAction.block, 'risk_per_lot_unavailable');
     }
-    final sizing = sizer.size(
+    final sizing = sourceSizer.size(
       signal: effectiveSignal,
       account: account,
       riskPerLot: riskPerLot,
