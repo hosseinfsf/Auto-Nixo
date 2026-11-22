@@ -208,6 +208,9 @@ class SizingResult {
       };
 }
 
+/// Filling mode for MT5 orders.
+enum FillingMode { ioc, fok, return_ }
+
 /// An order plan sent to MT5.
 class OrderPlan {
   OrderPlan({
@@ -222,6 +225,7 @@ class OrderPlan {
     this.comment = '',
     this.clientOrderId,
     this.deviation = 10,
+    this.fillingMode = FillingMode.ioc,
   });
 
   final String symbol;
@@ -235,6 +239,7 @@ class OrderPlan {
   final String comment;
   final String? clientOrderId;
   final int deviation;
+  final FillingMode fillingMode;
 
   Map<String, dynamic> toJson() => {
         'symbol': symbol,
@@ -248,6 +253,7 @@ class OrderPlan {
         'comment': comment,
         'client_order_id': clientOrderId,
         'deviation': deviation,
+        'filling_mode': fillingMode.name,
       };
 }
 

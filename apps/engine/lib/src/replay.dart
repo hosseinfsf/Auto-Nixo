@@ -16,9 +16,14 @@ class FakeExecutor implements Executor {
     this.quoteForSymbol = const {},
     Map<String, double> riskPerLotForSymbol = const {},
     this.defaultRiskPerLot = 1000.0,
+    this.symbolsList = const [],
   }) : riskPerLotForSymbol = riskPerLotForSymbol;
 
   final Map<String, Quote> quoteForSymbol;
+
+  /// Symbols reported by the (fake) broker. When non-empty, the pipeline
+  /// rejects any signal whose symbol is not listed.
+  final List<String> symbolsList;
 
   /// Authoritative risk-per-lot per symbol; falls back to [defaultRiskPerLot]
   /// (a test-only value — never used for live trading).
@@ -65,7 +70,7 @@ class FakeExecutor implements Executor {
       );
 
   @override
-  Future<List<String>> symbols() async => [];
+  Future<List<String>> symbols() async => symbolsList;
 
   @override
   Future<List<double>> rates(String symbol, int count) async => [];
@@ -75,6 +80,9 @@ class FakeExecutor implements Executor {
     if (riskPerLotUnavailable) return null;
     return riskPerLotForSymbol[symbol] ?? defaultRiskPerLot;
   }
+
+  @override
+  Future<List<int>> reconcilePositions() async => [];
 }
 
 class ReplayTool {

@@ -159,5 +159,76 @@ void main() {
       expect(decision.reason, contains('sizing rejected'));
       expect(executor.opened, isEmpty);
     });
+
+    test('two inputs with different riskPercent get different lots', () async {
+      // src1 already uses p1 (risk_percent 0.5). Add a second input at 1.0.
+      db.upsertProfile('p2', {
+        'id': 'p2',
+        'name': 'higher risk',
+        'mode': 'auto',
+        'risk_percent': 1.0,
+      });
+      db.upsertInput({
+        'id': 'src2',
+        'type': 'telegram_source',
+        'name': 'src2',
+        'enabled': true,
+        'profile_id': 'p2',
+      });
+
+      await pipeline.process(RawMessageEvent(
+        inputId: 'src1',
+        message: {
+          'input_id': 'src1',
+          'message_id': 'risk-1',
+          'text': 'BUY XAUUSD entry 4050 sl 4030 tp1 4080',
+          'caption': '',
+        },
+      ));
+      await pipeline.process(RawMessageEvent(
+        inputId: 'src2',
+        message: {
+          'input_id': 'src2',
+          'message_id': 'risk-2',
+          'text': 'BUY XAUUSD entry 4050 sl 4030 tp1 4080',
+          'caption': '',
+        },
+      ));
+
+      expect(executor.opened, hasLength(2));
+      final lots1 = executor.opened[0].lots;
+      final lots2 = executor.opened[1].lots;
+      expect(lots2, greaterThan(lots1));
+      // 0.5% -> 50 USD risk / 1000 USD per lot = 0.05 lots
+      expect(lots1, closeTo(0.05, 1e-9));
+      // 1.0% -> 100 USD risk / 1000 USD per lot = 0.10 lots
+      expect(lots2, closeTo(0.10, 1e-9));
+    });
+
+    test('default risk is 0.25% when the profile omits risk_percent', () async {
+      db.upsertProfile('p3', {'id': 'p3', 'name': 'defaults', 'mode': 'auto'});
+      db.upsertInput({
+        'id': 'src3',
+        'type': 'telegram_source',
+        'name': 'src3',
+        'enabled': true,
+        'profile_id': 'p3',
+      });
+
+      await pipeline.process(RawMessageEvent(
+        inputId: 'src3',
+        message: {
+          'input_id': 'src3',
+          'message_id': 'default-1',
+          'text': 'BUY XAUUSD entry 4050 sl 4030 tp1 4080',
+          'caption': '',
+        },
+      ));
+
+      expect(executor.opened, hasLength(1));
+      // 0.25% of 10000 = 25 USD risk / 1000 USD per lot = 0.025 lots,
+      // floored to the 0.01 volume step.
+      expect(executor.opened.first.lots, closeTo(0.02, 1e-9));
+    });
   });
 }

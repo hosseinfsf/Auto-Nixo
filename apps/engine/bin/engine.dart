@@ -95,6 +95,27 @@ Future<void> _run(EngineConfig config) async {
     ));
   }
 
+  // Reconcile open positions after restart (avoid duplicate execution).
+  try {
+    final openTickets = await link.reconcilePositions();
+    db.audit('info', 'reconciled ${openTickets.length} open positions on startup');
+    for (final ticket in openTickets) {
+      db.audit('info', 'open position ticket=$ticket');
+    }
+  } catch (e) {
+    db.audit('warn', 'position reconciliation failed: $e');
+  }
+
+  // Recover unfinished signals (signals without a decision).
+  try {
+    final unfinished = db.unfinishedSignals();
+    if (unfinished.isNotEmpty) {
+      db.audit('info', 'found ${unfinished.length} unfinished signals on startup');
+    }
+  } catch (e) {
+    db.audit('warn', 'unfinished signal recovery failed: $e');
+  }
+
   final pipeline = Pipeline(
     db: db,
     executor: link,
@@ -156,6 +177,7 @@ Future<void> _run(EngineConfig config) async {
     pipeline: pipeline,
     webhookToken: 'nixo-webhook',
     webhookPassphrase: 'nixo-passphrase',
+    webDir: 'web',
   );
   api.onKill = () {
     db.audit('warn', 'kill switch activated');

@@ -148,11 +148,25 @@ class Mt5LinkServer implements Executor {
       'COMMENT': order.comment,
       'CLIENT_ORDER_ID': order.clientOrderId ?? '',
       'DEVIATION': order.deviation.toString(),
+      'FILLING': order.fillingMode.name,
     });
     if (resp['CMD'] == 'OK') {
       return ExecutionAck(ok: true, orderId: resp['ORDER_ID']);
     }
     return ExecutionAck(ok: false, error: resp['MSG'], retcode: int.tryParse(resp['RETCODE'] ?? ''));
+  }
+
+  /// Reconcile open positions after restart. Returns list of position tickets.
+  @override
+  Future<List<int>> reconcilePositions() async {
+    final resp = await _request(Cmd.getPositions, {});
+    if (resp['CMD'] == 'ERROR' || resp['TICKETS'] == null) return [];
+    return resp['TICKETS']!
+        .split(',')
+        .where((s) => s.isNotEmpty)
+        .map((s) => int.tryParse(s) ?? 0)
+        .where((t) => t > 0)
+        .toList();
   }
 
   @override

@@ -30,6 +30,7 @@ class TelegramSource implements InputAdapter {
     required this.client,
     required this.db,
     this.watchdogSeconds = 30,
+    this.enabled = true,
   });
 
   final String inputId;
@@ -37,14 +38,19 @@ class TelegramSource implements InputAdapter {
   final TdLibClient client;
   final Database db;
   final int watchdogSeconds;
+  final bool enabled;
 
   final _controller = StreamController<RawMessageEvent>.broadcast();
   Timer? _watchdog;
+  Timer? _heartbeat;
   bool _running = false;
   String _status = 'stopped';
   int _lastMessageAt = 0;
   int _messagesToday = 0;
   String? _lastError;
+  int _reconnectAttempts = 0;
+  static const int _maxReconnectAttempts = 10;
+  static const Duration _baseReconnectDelay = Duration(seconds: 5);
 
   @override
   String get id => inputId;
@@ -54,11 +60,16 @@ class TelegramSource implements InputAdapter {
 
   @override
   Future<void> start() async {
+    if (!enabled) {
+      _status = 'disabled';
+      return;
+    }
     _running = true;
     _status = 'connecting';
     await client.start();
     _resolveTarget();
     _startWatchdog();
+    _startHeartbeat();
     // Subscribe to updates.
     client.updates.listen(_onUpdate);
   }
@@ -67,7 +78,17 @@ class TelegramSource implements InputAdapter {
   Future<void> stop() async {
     _running = false;
     _watchdog?.cancel();
+    _heartbeat?.cancel();
     _status = 'stopped';
+  }
+
+  void _startHeartbeat() {
+    _heartbeat?.cancel();
+    _heartbeat = Timer.periodic(const Duration(seconds: 10), (_) {
+      if (!_running) return;
+      // Ping TDLib to keep the connection alive.
+      client.send({'@type': 'getAuthorizationState'});
+    });
   }
 
   void _resolveTarget() {
@@ -191,9 +212,31 @@ class TelegramSource implements InputAdapter {
       if (now - _lastMessageAt > watchdogSeconds) {
         // No activity -> force reconnect (never exit).
         _status = 'reconnecting';
-        client.send({'@type': 'getAuthorizationState'});
+        _reconnectWithBackoff();
       }
     });
+  }
+
+  Future<void> _reconnectWithBackoff() async {
+    if (_reconnectAttempts >= _maxReconnectAttempts) {
+      _status = 'error';
+      _lastError = 'max reconnect attempts reached';
+      return;
+    }
+    _reconnectAttempts++;
+    final delay = _baseReconnectDelay * (_reconnectAttempts.clamp(1, 6));
+    _status = 'reconnecting';
+    await Future.delayed(delay);
+    if (!_running) return;
+    try {
+      await client.start();
+      _resolveTarget();
+      _reconnectAttempts = 0;
+      _status = 'online';
+    } catch (e) {
+      _lastError = '$e';
+      _reconnectWithBackoff();
+    }
   }
 
   @override

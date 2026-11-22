@@ -1,94 +1,96 @@
 # STATUS
 
-**Last updated:** at first commit (M0–M3 code scaffold).
+**Last updated:** dashboard + persistence + recovery + demo integration pass.
 
-## ⚠️ Honest status — read first
+## Honest status
 
-**NOTHING in this repository has been compiled or run yet.**
+Everything below was **run on the owner's Windows PC** (Dart 3.x on PATH).
+Nothing here was executed in the authoring sandbox.
 
-- The authoring sandbox has **no Dart/Flutter SDK** and **no Windows / MT5 /
-  live Telegram**, and external downloads are blocked.
-- Therefore: no `dart pub get`, no `dart analyze`, no `dart test`, no
-  `flutter build` has ever executed.
-- The MQL5 EA (`mt5/NixoLink.mq5`) has **never been compiled in MetaEditor**.
-- All Dart tests under `packages/core/test` and `apps/engine/test` are written
-  but have **not been run**.
-
-Do not treat any "code exists" row as working. Everything must be built and
-tested on the owner's Windows PC.
+| Check | Result | Where |
+|---|---|---|
+| `dart analyze` (packages/core) | No issues found | owner PC |
+| `dart analyze` (apps/engine) | No issues found | owner PC |
+| `dart test` (packages/core) | 46 passed | owner PC |
+| `dart test` (apps/engine) | 50 passed | owner PC |
+| `flutter analyze` (apps/ui) | not run | — |
+| MQL5 EA compile | not run (needs MetaEditor) | — |
+| Live Telegram / MT5 | not run (needs credentials + terminal) | — |
 
 ## Evidence table
 
 | Item | Code exists | Unit-tested | Verified live | Evidence |
 |---|---|---|---|---|
-| Core models (`models.dart`) | ✅ | ❌ | ❌ | not run |
-| Digit normalizer (`normalizer.dart`) | ✅ | ❌ | ❌ | test written, not run |
-| Classifier (`classifier.dart`) | ✅ | ❌ | ❌ | test written, not run |
-| Text parser (`text_parser.dart`) | ✅ | ❌ | ❌ | test written, not run |
-| Symbol mapping (`symbol_mapping.dart`) | ✅ | ❌ | ❌ | not run |
-| Validator (`validator.dart`) | ✅ | ❌ | ❌ | test written, not run |
-| Sizing (`sizing.dart`) | ✅ | ❌ | ❌ | test written, not run |
-| SL/TP resolver (`sl_tp.dart`) | ✅ | ❌ | ❌ | not run |
-| Roulette (`roulette.dart`) | ✅ | ❌ | ❌ | test written, not run |
-| Limits (`limits.dart`) | ✅ | ❌ | ❌ | not run |
-| SQLite store (`db.dart`) | ✅ | ❌ | ❌ | not run |
-| TDLib FFI client (`tdlib_client.dart`) | ✅ | ❌ | ❌ | not run; needs tdjson.dll |
-| Telegram source (`telegram_source.dart`) | ✅ | ❌ | ❌ | not run |
+| Core models (`models.dart`) | ✅ | ✅ | ❌ | core suite |
+| Digit normalizer (`normalizer.dart`) | ✅ | ✅ | ❌ | core suite |
+| Classifier (`classifier.dart`) | ✅ | ✅ | ❌ | core suite |
+| Text parser (`text_parser.dart`) | ✅ | ✅ | ❌ | core suite |
+| Symbol mapping (`symbol_mapping.dart`) | ✅ | ✅ | ❌ | core suite |
+| Validator (`validator.dart`) | ✅ | ✅ | ❌ | core suite |
+| Sizing (`sizing.dart`) | ✅ | ✅ | ❌ | core suite |
+| SL/TP resolver (`sl_tp.dart`) | ✅ | ✅ | ❌ | core suite |
+| Roulette (`roulette.dart`) | ✅ | ✅ | ❌ | core + engine suite |
+| Limits (`limits.dart`) | ✅ | ✅ | ❌ | core suite |
+| SQLite store (`db.dart`) | ✅ | ✅ | ❌ | persistence suite |
+| TDLib FFI client (`tdlib_client.dart`) | ✅ | ❌ | ❌ | needs tdjson.dll |
+| Telegram source (`telegram_source.dart`) | ✅ | ❌ | ❌ | needs live session |
 | Proxy manager (`proxy_manager.dart`) | ✅ | ❌ | ❌ | not run |
-| Input registry (`input_registry.dart`) | ✅ | ❌ | ❌ | not run |
-| Pipeline (`pipeline.dart`) | ✅ | ❌ | ❌ | test written, not run |
-| MT5 link server (`link_server.dart`) | ✅ | ❌ | ❌ | not run |
-| MT5 protocol (`protocol.dart`) | ✅ | ❌ | ❌ | test written, not run |
-| HTTP API + webhook (`http_api.dart`) | ✅ | ❌ | ❌ | not run |
+| Input registry (`input_registry.dart`) | ✅ | ✅ | ❌ | engine suite |
+| Pipeline (`pipeline.dart`) | ✅ | ✅ | ❌ | engine suite (incl. demo integration) |
+| MT5 link server (`link_server.dart`) | ✅ | ❌ | ❌ | needs MT5 terminal |
+| MT5 protocol (`protocol.dart`) | ✅ | ✅ | ❌ | engine suite |
+| HTTP API + web dashboard (`http_api.dart`, `web/`) | ✅ | ❌ | ❌ | needs a browser session |
 | Watchdog (`watchdog.dart`) | ✅ | ❌ | ❌ | not run |
-| Replay tool (`replay.dart`) | ✅ | ❌ | ❌ | not run |
+| Replay tool (`replay.dart`) | ✅ | ✅ | ❌ | engine suite |
 | Engine entrypoint (`bin/engine.dart`) | ✅ | ❌ | ❌ | not run |
 | MQL5 EA (`NixoLink.mq5`) | ✅ | ❌ | ❌ | never compiled in MetaEditor |
 | Flutter UI (`apps/ui/`) | ✅ | ❌ | ❌ | never built |
-| CI workflow (`.github/workflows/ci.yml`) | ✅ | — | — | to be run on first push |
+| Web dashboard (`apps/engine/web/`) | ✅ | ❌ | ❌ | served by the engine, not opened in a browser |
 
-Legend: ✅ = present, ❌ = not done.
+Legend: ✅ = done, ❌ = not done.
 
 ## Roulette: deviations from docs/ROULETTE_SPEC.md
 
-The `packages/core/lib/src/risk/roulette.dart` port is **not** an exact match
-to `docs/ROULETTE_SPEC.md`. The deviations below are intentional but have **not
-been approved by the owner** (they were carried over from the reference engine's
-own documented deviations). They must be reviewed and approved before M5.
+Still **not** an exact match. These remain open and unapproved:
 
-| # | Spec (EA) | `roulette.dart` | Why / status |
+| # | Spec (EA) | `roulette.dart` | Status |
 |---|---|---|---|
-| 1 | Order roulette win: `step = min(cap, step + 1)` | Order win doubles: `step = step*2` (capped at max) | Faster growth; NOT approved |
-| 2 | `InpRouletteTrigger` default = 4.00% | default `triggerPct = 3.0` | Configurable; NOT approved |
-| 3 | `InpMaxStep` default = 50 | default `maxSteps = 3` | Safer default; NOT approved |
-| 4 | `InpBaseRisk` default = 0.25% | default `baseRiskPct = 0.5` | Configurable; NOT approved |
-| 5 | `InpMaxOrderCount` default = 8 | default `maxOrderCount = 8` | matches |
-| 6 | State in MT5 Global Variables | State in SQLite (`roulette_states`) | engine persistence |
-| 7 | Flat zone `|profit| < 0.15*riskMoney` | same flat zone | matches |
-| 8 | `count > TP levels` not specified in EA | reuses last TP | safest default |
-| 9 | `InpSplitRiskAcrossOrders=true` keeps batch risk near one trade | full risk per sub-order | configurable |
+| 1 | Order win: `step = min(cap, step + 1)` | `step = step*2` capped | OPEN |
+| 2 | `InpRouletteTrigger` = 4.00% | `triggerPct = 3.0` | OPEN |
+| 3 | `InpMaxStep` = 50 | `maxSteps = 3` | OPEN |
+| 4 | `InpBaseRisk` = 0.25% | `baseRiskPct = 0.5` | OPEN |
+| 5 | `InpMaxOrderCount` = 8 | 8 | matches |
+| 6 | State in MT5 globals | SQLite `roulette_states` | by design |
+| 7 | Flat zone `|profit| < 0.15*riskMoney` | same | matches |
 
-**Owner action required:** approve or adjust deviations #1–#4 before M5.
+Sizing default risk is **0.25%** when a profile omits `risk_percent`
+(`pipeline.dart`), covered by a test.
 
-## What is NOT verified (requires live environment)
+## Not verified (needs live environment)
 
-- Live Telegram login/session/updates/edits/photos (S1).
-- MT5 socket round-trip, reconnect, and MetaEditor compile (S2).
-- Image OCR/vision accuracy (S3).
-- Real proxy failover (S4).
-- OrderCalcProfit lot math vs hand calc (S5).
-- TradingView webhook reachable through a tunnel (S6).
-- Any Flutter build or Dart test run.
+- Live Telegram login/session/updates/edits/photos.
+- MT5 socket round-trip, reconnect, MetaEditor compile.
+- Image OCR/vision accuracy.
+- Real proxy failover.
+- OrderCalcProfit lot math against a live broker.
+- TradingView webhook through a tunnel.
+- Any browser session against the dashboard.
+- Any Flutter build.
 
 ## How to run on the owner's PC
 
 ```
-# core
+# one-click
+Start_Nixo.bat        # starts the engine, waits for /health, opens the dashboard
+Health_Check.bat      # /health + /status + listeners
+Stop_Nixo.bat         # stops the engine; state stays in data/nixo.db
+
+# manual
 cd packages/core && dart pub get && dart analyze && dart test
-# engine
-cd apps/engine && dart pub get && dart analyze && dart test
+cd ../../apps/engine && dart pub get && dart analyze && dart test
 cd ../.. && dart run apps/engine/bin/engine.dart --self-test
-# UI
-cd apps/ui && flutter pub get && flutter analyze
 # EA: compile mt5/NixoLink.mq5 in MetaEditor (F7)
 ```
+
+Dashboard: `http://127.0.0.1:9124/` (token via `engine_config.json` → `api_token`;
+set `NIXO_TOKEN` for the BAT files).

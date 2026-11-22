@@ -1,0 +1,18 @@
+{
+  "_comment": "Copy to engine_config.json and fill in. Never commit engine_config.json.",
+
+  "data_dir": "data",
+
+  "mt5_host": "127.0.0.1",
+  "mt5_port": 9123,
+
+  "api_host": "127.0.0.1",
+  "api_port": 9124,
+  "api_token": "CHANGE-ME",
+
+  "telegram_api_id": 0,
+  "telegram_api_hash": "",
+
+  "broker_time_offset_hours": 0,
+  "validity_seconds": 300
+}

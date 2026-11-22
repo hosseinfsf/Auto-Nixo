@@ -318,5 +318,74 @@ class Database {
     );
   }
 
+  List<Map<String, dynamic>> listAudit({int limit = 50}) {
+    final rows = _db.select(
+      'SELECT ts, level, message FROM audit ORDER BY id DESC LIMIT ?',
+      [limit],
+    );
+    return rows.map((r) => Map<String, dynamic>.from(r)).toList();
+  }
+
+  Map<String, dynamic>? latestDecision() {
+    final rows = _db.select(
+      'SELECT s.json AS signal_json, d.action AS action, d.reason AS reason, '
+      'd.decided_at AS decided_at FROM decisions d '
+      'JOIN signals s ON s.id = d.signal_id '
+      'ORDER BY d.decided_at DESC LIMIT 1',
+    );
+    if (rows.isEmpty) return null;
+    final row = rows.first;
+    final signal = jsonDecode(row['signal_json'] as String) as Map<String, dynamic>;
+    final ts = row['decided_at'] as int;
+    return {
+      ...signal,
+      'action': row['action'],
+      'reason': row['reason'],
+      'timestamp': DateTime.fromMillisecondsSinceEpoch(ts * 1000, isUtc: true)
+          .toIso8601String(),
+    };
+  }
+
+  Map<String, dynamic>? latestOrder() {
+    final rows = _db.select(
+      'SELECT * FROM orders ORDER BY created_at DESC LIMIT 1',
+    );
+    if (rows.isEmpty) return null;
+    return Map<String, dynamic>.from(rows.first);
+  }
+
+  /// Insert a decision only if none exists yet, so richer rows written by
+  /// earlier pipeline stages are never overwritten by a bare one.
+  void insertDecisionIfAbsent(Map<String, dynamic> row) {
+    _db.execute(
+      'INSERT OR IGNORE INTO decisions '
+      '(signal_id,action,reason,validation,sizing,order_json,decided_at) '
+      'VALUES (?,?,?,?,?,?,?)',
+      [
+        row['signal_id'], row['action'], row['reason'],
+        row['validation'] ?? '', row['sizing'] ?? '', row['order_json'] ?? '',
+        DateTime.now().millisecondsSinceEpoch ~/ 1000,
+      ],
+    );
+  }
+
+  Map<String, dynamic>? decisionFor(String signalId) {
+    final rows = _db.select(
+      'SELECT action, reason FROM decisions WHERE signal_id=? LIMIT 1',
+      [signalId],
+    );
+    if (rows.isEmpty) return null;
+    return Map<String, dynamic>.from(rows.first);
+  }
+
+  List<Map<String, dynamic>> unfinishedSignals() {
+    final rows = _db.select(
+      'SELECT s.* FROM signals s '
+      'LEFT JOIN decisions d ON d.signal_id = s.id '
+      'WHERE d.signal_id IS NULL',
+    );
+    return rows.map((r) => Map<String, dynamic>.from(r)).toList();
+  }
+
   void close() => _db.dispose();
 }

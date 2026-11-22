@@ -23,6 +23,7 @@ abstract class Executor {
   Future<AccountInfo> account();
   Future<List<String>> symbols();
   Future<List<double>> rates(String symbol, int count);
+  Future<List<int>> reconcilePositions();
 
   /// Authoritative monetary risk per 1.0 lot at the given entry/SL, computed
   /// by the EA via OrderCalcProfit. Returns null when unavailable (in which
@@ -110,6 +111,15 @@ class Pipeline {
     final editVersion = msg['edit_version'] as int? ?? 0;
     final messageId = msg['message_id']?.toString() ?? '';
     final signalId = 'sig_${inputId}_${messageId}_$editVersion';
+
+    // Idempotency: a signal already decided is never executed twice, even
+    // across restarts (durable key = input_id + message_id + edit_version).
+    final prior = db.decisionFor(signalId);
+    if (prior != null) {
+      return _decision(signalId, DecisionAction.skip,
+          'duplicate (already ${prior['action']})');
+    }
+
     db.insertSignal({
       'id': signalId,
       'input_id': inputId,
@@ -168,7 +178,7 @@ class Pipeline {
     final sourceSlTp = SlTpResolver(config: slTpConfig, tpRr: profile?.tpRr);
     final slTpResult = sourceSlTp.resolve(signal, quote, tpRr: profile?.tpRr);
     if (slTpResult.rejectReason != null) {
-      return _decision(signalId, DecisionAction.skip, slTpResult.rejectReason!);
+      return _finish(signalId, DecisionAction.skip, slTpResult.rejectReason!);
     }
 
     // Build a per-source Sizer from the profile's risk settings.
@@ -202,12 +212,12 @@ class Pipeline {
                 (effectiveSignal.entryHigh ?? effectiveSignal.entryLow ?? 0)) /
             2;
     if (entry == null || effectiveSignal.sl == null) {
-      return _decision(signalId, DecisionAction.block, 'missing entry or SL for risk calc');
+      return _finish(signalId, DecisionAction.block, 'missing entry or SL for risk calc');
     }
     final riskPerLot = await executor.riskPerLot(
         signal.symbol, signal.side!, entry, effectiveSignal.sl!);
     if (riskPerLot == null || riskPerLot <= 0) {
-      return _decision(signalId, DecisionAction.block, 'risk_per_lot_unavailable');
+      return _finish(signalId, DecisionAction.block, 'risk_per_lot_unavailable');
     }
     final sizing = sourceSizer.size(
       signal: effectiveSignal,
@@ -217,22 +227,22 @@ class Pipeline {
       slPrice: effectiveSignal.sl,
     );
     if (sizing.lots <= 0) {
-      return _decision(signalId, DecisionAction.block, 'sizing rejected: ${sizing.reason}');
+      return _finish(signalId, DecisionAction.block, 'sizing rejected: ${sizing.reason}');
     }
 
     // 5. Mode / limits.
     final mode = profile?.mode ?? ProfileMode.shadow;
     if (mode == ProfileMode.off) {
-      return _decision(signalId, DecisionAction.skip, 'mode=off');
+      return _finish(signalId, DecisionAction.skip, 'mode=off');
     }
 
     final globalCheck = limits.check();
     if (globalCheck.blocked) {
-      return _decision(signalId, DecisionAction.block, globalCheck.reasons.join('; '));
+      return _finish(signalId, DecisionAction.block, globalCheck.reasons.join('; '));
     }
 
     if (!perInputLimits.canOpen(inputId, equity: account.equity)) {
-      return _decision(signalId, DecisionAction.block, 'per-input limits');
+      return _finish(signalId, DecisionAction.block, 'per-input limits');
     }
 
     // Roulette volume multiplier.
@@ -253,15 +263,16 @@ class Pipeline {
     );
 
     // 6. Execute or shadow.
-    if (mode == ProfileMode.shadow) {
+    if (mode == ProfileMode.shadow || mode == ProfileMode.confirm) {
       db.insertDecision({
         'signal_id': signalId,
         'action': 'shadow',
-        'reason': 'shadow mode',
+        'reason': mode == ProfileMode.confirm ? 'confirm mode' : 'shadow mode',
         'sizing': jsonEncode(sizing.toJson()),
         'order_json': jsonEncode(order.toJson()),
       });
-      return _decision(signalId, DecisionAction.shadow, 'shadow mode');
+      return _decision(signalId, DecisionAction.shadow,
+          mode == ProfileMode.confirm ? 'confirm mode' : 'shadow mode');
     }
 
     final ack = await executor.open(order);
@@ -289,9 +300,25 @@ class Pipeline {
     });
 
     if (!ack.ok) {
+      db.insertDecision({
+        'signal_id': signalId,
+        'action': 'block',
+        'reason': 'execute failed: ${ack.error}',
+        'sizing': jsonEncode(sizing.toJson()),
+        'order_json': jsonEncode(order.toJson()),
+      });
       return _decision(signalId, DecisionAction.block, 'execute failed: ${ack.error}');
     }
 
+    // Persist the execute decision so idempotency and the dashboard both see
+    // the terminal outcome of this signal.
+    db.insertDecision({
+      'signal_id': signalId,
+      'action': 'execute',
+      'reason': 'executed',
+      'sizing': jsonEncode(sizing.toJson()),
+      'order_json': jsonEncode(order.toJson()),
+    });
     return _decision(signalId, DecisionAction.execute, 'executed');
   }
 
@@ -332,7 +359,7 @@ class Pipeline {
         orElse: () => TpPolicy.signal,
       ),
       tpRr: (json['tp_rr'] as num? ?? 3.0).toDouble(),
-      riskPercent: (json['risk_percent'] as num? ?? 1.0).toDouble(),
+      riskPercent: (json['risk_percent'] as num? ?? 0.25).toDouble(),
       riskMultiplier: (json['risk_multiplier'] as num? ?? 1.0).toDouble(),
       minLot: (json['min_lot'] as num? ?? 0.01).toDouble(),
       maxLot: (json['max_lot'] as num? ?? 10.0).toDouble(),
@@ -346,6 +373,20 @@ class Pipeline {
       action: action,
       reason: reason,
     );
+  }
+
+  /// Record a terminal decision (never overwriting a richer existing row) and
+  /// return it. Used by every path after the signal id is known, so a signal
+  /// can never be re-executed after a restart.
+  Decision _finish(String signalId, DecisionAction action, String reason) {
+    if (signalId.isNotEmpty) {
+      db.insertDecisionIfAbsent({
+        'signal_id': signalId,
+        'action': action.name,
+        'reason': reason,
+      });
+    }
+    return _decision(signalId, action, reason);
   }
 }
 
