@@ -48,6 +48,7 @@ ulong  g_connectedAt = 0;
 ulong  g_lastErrLog  = 0;
 bool   g_historySyncPending = false;
 ulong  g_lastHistorySync = 0;
+ulong  g_nextHistorySyncTry = 0;
 
 //+------------------------------------------------------------------+
 //| Percent-encoding (must match engine protocol.dart)                |
@@ -1100,6 +1101,7 @@ void HandleLine(string line)
       Print("NixoLink: authenticated with engine");
       SendAccountSnapshot();
       g_historySyncPending = true;
+      g_nextHistorySyncTry = 0;
       return;
    }
    if(cmd == "AUTH_FAIL")
@@ -1179,8 +1181,8 @@ bool ReplayTradeHistory()
       return(false);
    }
 
-   // Copy identifiers first: HistorySelectByPosition changes the active selection.
-   ulong tickets[];
+   // Only position IDs are copied from the window. For each ID we then select
+   // the complete position history, including an opening deal older than the window.
    long positions[];
    int total = HistoryDealsTotal();
    for(int i = 0; i < total; i++)
@@ -1190,9 +1192,6 @@ bool ReplayTradeHistory()
       long dtype = HistoryDealGetInteger(ticket, DEAL_TYPE);
       long posId = HistoryDealGetInteger(ticket, DEAL_POSITION_ID);
       if((dtype != DEAL_TYPE_BUY && dtype != DEAL_TYPE_SELL) || posId <= 0) continue;
-      int n = ArraySize(tickets);
-      ArrayResize(tickets, n + 1);
-      tickets[n] = ticket;
       bool known = false;
       for(int p = 0; p < ArraySize(positions); p++)
          if(positions[p] == posId) { known = true; break; }
@@ -1204,44 +1203,42 @@ bool ReplayTradeHistory()
       }
    }
 
-   int replayed = 0;
+   int replayed = 0, closedCount = 0;
    for(int p = 0; p < ArraySize(positions); p++)
    {
       long posId = positions[p];
+      if(!HistorySelectByPosition((ulong)posId)) continue;
+      int deals = HistoryDealsTotal();
       bool tagged = false;
-      for(int j = 0; j < ArraySize(tickets); j++)
+      for(int k = 0; k < deals; k++)
       {
-         ulong ticket = tickets[j];
-         if(HistoryDealGetInteger(ticket, DEAL_POSITION_ID) != posId) continue;
-         if(HistoryDealGetInteger(ticket, DEAL_ENTRY) == DEAL_ENTRY_IN &&
-            StringFind(HistoryDealGetString(ticket, DEAL_COMMENT), "NX") == 0)
+         ulong deal = HistoryDealGetTicket(k);
+         if(deal == 0) continue;
+         if(HistoryDealGetInteger(deal, DEAL_ENTRY) == DEAL_ENTRY_IN &&
+            StringFind(HistoryDealGetString(deal, DEAL_COMMENT), "NX") == 0)
          { tagged = true; break; }
       }
       if(!tagged) continue;
-      for(int j = 0; j < ArraySize(tickets); j++)
+
+      // Replay every deal belonging to this Nixo position. DB idempotency makes
+      // the overlap safe even when the same window is replayed after every restart.
+      for(int k = 0; k < deals; k++)
       {
-         ulong ticket = tickets[j];
-         if(HistoryDealGetInteger(ticket, DEAL_POSITION_ID) != posId) continue;
-         if(!SendHistoryFill(ticket, posId))
+         ulong deal = HistoryDealGetTicket(k);
+         if(deal == 0) continue;
+         if(!SendHistoryFill(deal, posId))
          {
             Print("NixoLink: history replay interrupted during FILL; reconnect will retry");
             return(false);
          }
          replayed++;
       }
-   }
 
-   int closedCount = 0;
-   for(int p = 0; p < ArraySize(positions); p++)
-   {
-      long posId = positions[p];
-      if(!HistorySelectByPosition((ulong)posId)) continue;
       double openedVolume = 0.0, closedVolume = 0.0, netTotal = 0.0;
       string openingComment = "";
       bool ambiguousOpening = false, hasInOut = false;
       ulong lastCloseTicket = 0;
       long lastCloseTime = 0;
-      int deals = HistoryDealsTotal();
       for(int k = 0; k < deals; k++)
       {
          ulong deal = HistoryDealGetTicket(k);
@@ -1273,6 +1270,7 @@ bool ReplayTradeHistory()
                      HistoryDealGetDouble(deal, DEAL_SWAP) +
                      HistoryDealGetDouble(deal, DEAL_COMMISSION);
       }
+
       // Never guess which intent owns a netting position with multiple entry comments.
       if(hasInOut || ambiguousOpening || openingComment == "" ||
          openedVolume <= 0.0 || closedVolume + 1e-8 < openedVolume || lastCloseTicket == 0)
@@ -1296,7 +1294,7 @@ bool ReplayTradeHistory()
    }
    g_lastHistorySync = GetTickCount64();
    Print("NixoLink: history recovery complete; replayed ", replayed,
-         " deals and ", closedCount, " fully closed positions (", days, " days)");
+         " deals and ", closedCount, " fully closed positions (", days, " day window)");
    return(true);
 }
 
@@ -1481,11 +1479,12 @@ void OnTimer()
       Disconnect("heartbeat timeout");
       return;
    }
-   if(g_historySyncPending ||
+   if((g_historySyncPending && now >= g_nextHistorySyncTry) ||
       (InpHistorySyncIntervalMin > 0 && g_lastHistorySync > 0 &&
        now - g_lastHistorySync >= (ulong)InpHistorySyncIntervalMin * 60000))
    {
       g_historySyncPending = !ReplayTradeHistory();
+      if(g_historySyncPending) g_nextHistorySyncTry = now + 5000;
       if(!g_historySyncPending && g_socket == INVALID_HANDLE) return;
    }
    if(now - g_lastHb >= (ulong)InpHeartbeatSec * 1000)
