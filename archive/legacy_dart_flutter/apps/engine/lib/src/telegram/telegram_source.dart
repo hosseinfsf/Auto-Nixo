@@ -8,6 +8,7 @@ import 'dart:async';
 
 import '../db.dart';
 import 'tdlib_client.dart';
+import 'telegram_proxy_config.dart';
 
 abstract class InputAdapter {
   String get id;
@@ -29,6 +30,7 @@ class TelegramSource implements InputAdapter {
     required this.target,
     required this.client,
     required this.db,
+    this.proxyConfig,
     this.watchdogSeconds = 30,
     this.enabled = true,
   });
@@ -37,6 +39,7 @@ class TelegramSource implements InputAdapter {
   final String target; // @username, t.me link, numeric id, or invite link
   final TdLibClient client;
   final Database db;
+  TelegramProxyConfig? proxyConfig;
   final int watchdogSeconds;
   final bool enabled;
 
@@ -80,6 +83,26 @@ class TelegramSource implements InputAdapter {
     _watchdog?.cancel();
     _heartbeat?.cancel();
     _status = 'stopped';
+  }
+
+  /// Reload Telegram proxy config and reconnect ONLY the Telegram client.
+  /// Does not touch MT5 link server or any other component.
+  Future<void> reloadProxy(TelegramProxyConfig newCfg) async {
+    proxyConfig = newCfg;
+    client.config.proxyConfig = newCfg;
+    if (!_running) return;
+    _status = 'reconnecting';
+    try {
+      client.close();
+      await Future.delayed(const Duration(milliseconds: 200));
+      await client.start();
+      _resolveTarget();
+      _status = 'online';
+      _lastError = null;
+    } catch (e) {
+      _lastError = '$e';
+      _status = 'error';
+    }
   }
 
   void _startHeartbeat() {

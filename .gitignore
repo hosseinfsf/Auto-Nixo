@@ -11,6 +11,7 @@ api_id.txt
 *.pfx
 secrets.json
 secrets/
+telegram_proxy.json
 *.secret
 
 # Databases

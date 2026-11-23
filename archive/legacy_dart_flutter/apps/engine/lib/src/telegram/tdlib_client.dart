@@ -12,6 +12,8 @@ import 'dart:io';
 
 import 'package:ffi/ffi.dart';
 
+import 'telegram_proxy_config.dart';
+
 typedef _TdJsonCreate = Pointer<Void> Function();
 typedef _TdJsonCreateC = Pointer<Void> Function();
 typedef _TdJsonSend = void Function(Pointer<Void>, Pointer<Utf8>);
@@ -39,6 +41,7 @@ class TelegramConfig {
     this.sessionDir = 'data/telegram',
     this.libraryPath,
     this.proxy,
+    this.proxyConfig,
     this.watchdogSeconds = 30,
   });
 
@@ -47,6 +50,7 @@ class TelegramConfig {
   final String sessionDir;
   final String? libraryPath;
   final Map<String, dynamic>? proxy; // {type:'mtproto'|'socks5'|'http', ...}
+  TelegramProxyConfig? proxyConfig;
   final int watchdogSeconds;
 }
 
@@ -91,10 +95,14 @@ class TdLibClient {
   /// Start the client and the receive loop.
   Future<void> start() async {
     if (_started) return;
+    _destroyed = false;
     _client = _create();
     _started = true;
     _state = TelegramState.connecting;
     _setTdlibParameters();
+    if (config.proxyConfig != null && config.proxyConfig!.enabled) {
+      applyProxyConfig(config.proxyConfig!);
+    }
     _receiveLoop();
   }
 
@@ -237,12 +245,58 @@ class TdLibClient {
     });
   }
 
+  /// Apply a TelegramProxyConfig to TDLib. Returns the proxy id if successful.
+  int? applyProxyConfig(TelegramProxyConfig cfg) {
+    final mapped = toTdlibProxy(cfg);
+    if (mapped == null) return null;
+    final typeObj = mapped['type_obj'] as Map<String, dynamic>;
+    final result = execute({
+      '@type': 'addProxy',
+      'server': mapped['server'],
+      'port': mapped['port'],
+      'enable': true,
+      'type': typeObj,
+    });
+    final id = result?['id'] as int?;
+    if (id != null) {
+      _activeProxyId = id;
+      execute({'@type': 'enableProxy', 'proxy_id': id});
+    }
+    return id;
+  }
+
+  int? _activeProxyId;
+  int? get activeProxyId => _activeProxyId;
+
+  String? _lastProxyError;
+  String? get lastProxyError => _lastProxyError;
+
+  bool _proxyConnected = false;
+  bool get proxyConnected => _proxyConnected;
+
   void enableProxy(int proxyId) {
     send({'@type': 'enableProxy', 'proxy_id': proxyId});
   }
 
   void pingProxy(int proxyId) {
     send({'@type': 'pingProxy', 'proxy_id': proxyId});
+  }
+
+  /// Test the currently applied proxy without sending messages.
+  Future<bool> testProxy() async {
+    if (_activeProxyId == null) return false;
+    try {
+      final r = execute({'@type': 'pingProxy', 'proxy_id': _activeProxyId});
+      final state = r?['state'] as Map<String, dynamic>?;
+      final type = state?['@type'] as String?;
+      _proxyConnected = type == 'proxyStateReady';
+      if (!_proxyConnected) _lastProxyError = type ?? 'unknown';
+      return _proxyConnected;
+    } catch (e) {
+      _lastProxyError = '$e';
+      _proxyConnected = false;
+      return false;
+    }
   }
 
   void removeProxy(int proxyId) {
@@ -255,6 +309,7 @@ class TdLibClient {
       _destroy(_client!);
       _client = null;
     }
+    _started = false;
     _state = TelegramState.stopped;
   }
 }
