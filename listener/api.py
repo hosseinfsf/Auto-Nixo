@@ -1,15 +1,15 @@
-﻿"""
+"""
 NIXO Listener API — localhost HTTP server for the Management Panel.
 
 Endpoints:
-  GET  /api/listener/status   -> {running, pid, log}
+  GET  /api/listener/status   -> {running, pid, log, status}
   POST /api/listener/start    -> {message}
   POST /api/listener/stop     -> {message}
-  GET  /api/proxy/list        -> {proxies: [...]}
+  GET  /api/proxy/list        -> {proxies: [...]}  (secrets masked)
   POST /api/proxy/add         -> {message}
   POST /api/proxy/test        -> {ok, latency, error}
   POST /api/proxy/remove      -> {message}
-  GET  /api/queue/stats       -> {total, pending, processed, failed}
+  GET  /api/queue/stats       -> {total, pending, processed, failed, expired}
   GET  /api/queue/recent      -> {rows: [...]}
 """
 import os
@@ -18,19 +18,35 @@ import json
 import sqlite3
 import subprocess
 import signal
+import hmac
+import hashlib
 from pathlib import Path
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse
 
 BASE_DIR = Path(__file__).resolve().parent
 DB_PATH = BASE_DIR / "data" / "listener_queue.db"
-LISTENER_API_TOKEN = os.getenv("LISTENER_API_TOKEN", "")
+PID_FILE = BASE_DIR / "data" / "listener.pid"
+STATUS_FILE = BASE_DIR / "data" / "status.json"
 LISTENER_SCRIPT = BASE_DIR / "listener.py"
 PYTHON = sys.executable
 PORT = 9125
+MAX_BODY_SIZE = 65536  # 64 KB
+PANEL_ORIGIN = os.getenv("PANEL_ORIGIN", "http://127.0.0.1:9124")
 
-# Track listener process
-_listener_proc = None
+# Load .env
+try:
+    from dotenv import load_dotenv
+    load_dotenv(BASE_DIR / ".env")
+except ImportError:
+    pass
+
+LISTENER_API_TOKEN = os.getenv("LISTENER_API_TOKEN", "")
+
+# Refuse to start without token
+if not LISTENER_API_TOKEN:
+    print("ERROR: LISTENER_API_TOKEN must be set in listener/.env")
+    sys.exit(1)
 
 
 def get_db():
@@ -39,11 +55,20 @@ def get_db():
     return conn
 
 
+def _mask_secret(s):
+    if not s:
+        return None
+    if len(s) <= 8:
+        return "****"
+    return s[:4] + "****" + s[-4:]
+
+
 class Handler(BaseHTTPRequestHandler):
     def _cors(self):
-        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Origin", PANEL_ORIGIN)
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
+        self.send_header("Vary", "Origin")
 
     def _json(self, data, status=200):
         body = json.dumps(data).encode()
@@ -56,15 +81,29 @@ class Handler(BaseHTTPRequestHandler):
 
     def _read_body(self):
         length = int(self.headers.get("Content-Length", 0))
+        if length > MAX_BODY_SIZE:
+            raise ValueError("Body too large")
         if length:
-            return json.loads(self.rfile.read(length))
+            raw = self.rfile.read(length)
+            return json.loads(raw)
         return {}
 
     def _authorized(self):
-        if not LISTENER_API_TOKEN:
-            return True  # no token configured = open (dev mode)
         auth = self.headers.get("Authorization", "")
-        return auth == "Bearer " + LISTENER_API_TOKEN
+        if not auth.startswith("Bearer "):
+            return False
+        token = auth[7:]
+        return hmac.compare_digest(token, LISTENER_API_TOKEN)
+
+    def _validate_host_origin(self):
+        host = self.headers.get("Host", "")
+        origin = self.headers.get("Origin", "")
+        allowed_hosts = {"127.0.0.1", "localhost"}
+        host_ok = host.split(":")[0] in allowed_hosts
+        origin_ok = True
+        if origin:
+            origin_ok = origin.startswith("http://127.0.0.1") or origin.startswith("http://localhost")
+        return host_ok and origin_ok
 
     def do_OPTIONS(self):
         self.send_response(204)
@@ -72,27 +111,52 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self):
+        if not self._validate_host_origin():
+            self._json({"error": "forbidden"}, 403)
+            return
         if not self._authorized():
             self._json({"error": "unauthorized"}, 401)
             return
         path = urlparse(self.path).path
+
         if path == "/api/listener/status":
-            global _listener_proc
-            running = _listener_proc is not None and _listener_proc.poll() is None
-            pid = _listener_proc.pid if running else None
+            running = False
+            pid = None
+            if PID_FILE.exists():
+                try:
+                    pid = int(PID_FILE.read_text().strip())
+                    os.kill(pid, 0)
+                    running = True
+                except (ValueError, OSError, ProcessLookupError):
+                    running = False
+                    pid = None
             log_tail = ""
             log_file = BASE_DIR / "data" / "listener.log"
             if log_file.exists():
                 lines = log_file.read_text().splitlines()
                 log_tail = "\n".join(lines[-50:])
-            self._json({"running": running, "pid": pid, "log": log_tail})
+            status_json = {}
+            if STATUS_FILE.exists():
+                try:
+                    status_json = json.loads(STATUS_FILE.read_text())
+                except Exception:
+                    pass
+            self._json({"running": running, "pid": pid, "log": log_tail, "status": status_json})
 
         elif path == "/api/proxy/list":
             conn = get_db()
             rows = conn.execute(
-                "SELECT type, host, port, status, latency_ms, fail_count FROM proxy_list ORDER BY priority ASC"
+                "SELECT type, host, port, status, latency_ms, fail_count, priority FROM proxy_list ORDER BY priority ASC"
             ).fetchall()
-            proxies = [dict(r) for r in rows]
+            proxies = []
+            for r in rows:
+                d = dict(r)
+                secret_row = conn.execute(
+                    "SELECT secret FROM proxy_list WHERE type=? AND host=? AND port=?",
+                    (d["type"], d["host"], d["port"]),
+                ).fetchone()
+                d["secret"] = _mask_secret(secret_row[0] if secret_row else None)
+                proxies.append(d)
             conn.close()
             self._json({"proxies": proxies})
 
@@ -102,8 +166,9 @@ class Handler(BaseHTTPRequestHandler):
             pending = conn.execute("SELECT COUNT(*) FROM listener_queue WHERE state='pending'").fetchone()[0]
             processed = conn.execute("SELECT COUNT(*) FROM listener_queue WHERE state='processed'").fetchone()[0]
             failed = conn.execute("SELECT COUNT(*) FROM listener_queue WHERE state='failed'").fetchone()[0]
+            expired = conn.execute("SELECT COUNT(*) FROM listener_queue WHERE state='expired'").fetchone()[0]
             conn.close()
-            self._json({"total": total, "pending": pending, "processed": processed, "failed": failed})
+            self._json({"total": total, "pending": pending, "processed": processed, "failed": failed, "expired": expired})
 
         elif path == "/api/queue/recent":
             conn = get_db()
@@ -117,38 +182,53 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"error": "not found"}, 404)
 
     def do_POST(self):
-        global _listener_proc
+        if not self._validate_host_origin():
+            self._json({"error": "forbidden"}, 403)
+            return
         if not self._authorized():
             self._json({"error": "unauthorized"}, 401)
             return
         path = urlparse(self.path).path
-        body = self._read_body()
+        try:
+            body = self._read_body()
+        except Exception as e:
+            self._json({"error": str(e)}, 400)
+            return
 
         if path == "/api/listener/start":
-            if _listener_proc is not None and _listener_proc.poll() is None:
-                self._json({"message": "Listener already running"})
-                return
+            if PID_FILE.exists():
+                try:
+                    pid = int(PID_FILE.read_text().strip())
+                    os.kill(pid, 0)
+                    self._json({"message": "Listener already running", "pid": pid})
+                    return
+                except (ValueError, OSError, ProcessLookupError):
+                    PID_FILE.unlink(missing_ok=True)
+
             log_file = BASE_DIR / "data" / "listener.log"
             log_file.parent.mkdir(parents=True, exist_ok=True)
             with open(log_file, "a") as f:
-                _listener_proc = subprocess.Popen(
+                proc = subprocess.Popen(
                     [PYTHON, str(LISTENER_SCRIPT)],
                     cwd=str(BASE_DIR),
                     stdout=f,
                     stderr=subprocess.STDOUT,
                 )
-            self._json({"message": "Listener started", "pid": _listener_proc.pid})
+            PID_FILE.write_text(str(proc.pid))
+            self._json({"message": "Listener started", "pid": proc.pid})
 
         elif path == "/api/listener/stop":
-            if _listener_proc is None or _listener_proc.poll() is not None:
+            if not PID_FILE.exists():
                 self._json({"message": "Listener not running"})
                 return
-            _listener_proc.terminate()
             try:
-                _listener_proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                _listener_proc.kill()
-            self._json({"message": "Listener stopped"})
+                pid = int(PID_FILE.read_text().strip())
+                os.kill(pid, signal.SIGTERM)
+                PID_FILE.unlink(missing_ok=True)
+                self._json({"message": "Listener stopped"})
+            except (ValueError, OSError, ProcessLookupError):
+                PID_FILE.unlink(missing_ok=True)
+                self._json({"message": "Listener not running"})
 
         elif path == "/api/proxy/add":
             conn = get_db()
@@ -166,38 +246,29 @@ class Handler(BaseHTTPRequestHandler):
 
         elif path == "/api/proxy/test":
             import asyncio
-            from listener.listener import check_proxy_health
+            sys.path.insert(0, str(BASE_DIR))
+            from listener import check_proxy_health
             ptype = body["type"]
             host = body["host"]
             port = body["port"]
             secret = body.get("secret")
 
-            def factory(**kw):
-                from telethon import TelegramClient
-                return TelegramClient("hc", int(os.getenv("TELEGRAM_API_ID", "0")), os.getenv("TELEGRAM_API_HASH", ""), **kw)
-
             async def run_test():
-                return await check_proxy_health(factory, ptype, host, port, secret)
+                return await check_proxy_health(ptype, host, port, secret)
 
             try:
                 ok, lat, err = asyncio.run(run_test())
-                # Update DB
                 conn = get_db()
                 if ok:
                     status = "active"
                     fc = 0
                 else:
-                    # Increment fail count
                     cur = conn.execute(
                         "SELECT fail_count FROM proxy_list WHERE type=? AND host=? AND port=?",
                         (ptype, host, port),
                     ).fetchone()
                     fc = (cur[0] if cur else 0) + 1
-                    if fc >= 3:
-                        status = "quarantined"
-                        log_msg = "Proxy quarantined after %d failures" % fc
-                    else:
-                        status = "active"
+                    status = "quarantined" if fc >= 3 else "active"
                 conn.execute(
                     "UPDATE proxy_list SET status=?, latency_ms=?, last_check=?, fail_count=? WHERE type=? AND host=? AND port=?",
                     (status, lat, __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(), fc, ptype, host, port),
@@ -222,7 +293,7 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"error": "not found"}, 404)
 
     def log_message(self, format, *args):
-        pass  # suppress default logging
+        pass
 
 
 def main():

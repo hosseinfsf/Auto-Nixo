@@ -13,7 +13,7 @@ All tests passed. No trading, no MT5 connection, no Telegram sends.
 | 2 | New messages ingested | ✅ PASS | 53+ rows in listener_queue (update_type='new') |
 | 3 | Edit messages ingested | ✅ PASS | 17+ edit entries with incrementing edit_version |
 | 4 | Duplicate prevention | ✅ PASS | INSERT OR IGNORE + UNIQUE constraint verified; count unchanged on duplicate |
-| 5 | Proxy health check (real handshake) | ✅ PASS | MTProto proxy REDACTED_PROXY_HOST:2096 → ok=True, latency=3514ms |
+| 5 | Proxy health check (real handshake) | ✅ PASS | MTProto proxy (host/port redacted) → ok=True, latency=3514ms |
 | 6 | Proxy failover (quarantine) | ✅ PASS | Dead proxy quarantined after 3 failures; active proxy remains |
 | 7 | Start/Stop via API | ✅ PASS | POST /api/listener/start → running=true; POST /api/listener/stop → running=false |
 | 8 | Queue stats via API | ✅ PASS | GET /api/queue/stats → {total, pending, processed, failed} |

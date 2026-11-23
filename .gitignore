@@ -4,6 +4,7 @@
 .env*
 *.session
 *.session-journal
+*.session*
 api_hash.txt
 api_id.txt
 *.key
@@ -20,10 +21,14 @@ telegram_proxy.json
 *.db-shm
 *.sqlite
 *.sqlite3
+data/
 
 # Logs
 *.log
 logs/
+
+# Media
+media/
 
 # Build artifacts
 build/
