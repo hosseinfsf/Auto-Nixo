@@ -1,7 +1,6 @@
 """Durable, account-scoped SQLite persistence for Nixo Python engine."""
 from __future__ import annotations
 
-import hashlib
 import json
 import sqlite3
 from contextlib import contextmanager
@@ -38,63 +37,77 @@ class NixoStore:
             conn.close()
 
     def migrate(self) -> None:
-        with self.transaction() as db:
-            db.execute("PRAGMA journal_mode=WAL")
-            db.execute("""CREATE TABLE IF NOT EXISTS schema_migrations (
+        conn = self.connect()
+        try:
+            # WAL must be selected before BEGIN; SQLite rejects changing journal
+            # mode from inside an active transaction.
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute("""CREATE TABLE IF NOT EXISTS schema_migrations (
                 version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             )""")
-            current = db.execute("SELECT COALESCE(MAX(version), 0) FROM schema_migrations").fetchone()[0]
+            current = conn.execute(
+                "SELECT COALESCE(MAX(version), 0) FROM schema_migrations"
+            ).fetchone()[0]
             if current < 1:
-                db.executescript("""
-                CREATE TABLE telegram_accounts (
-                    account_id TEXT PRIMARY KEY,
-                    label TEXT NOT NULL,
-                    enabled INTEGER NOT NULL DEFAULT 1 CHECK(enabled IN (0,1)),
-                    roulette_enabled INTEGER NOT NULL DEFAULT 1 CHECK(roulette_enabled IN (0,1)),
-                    roulette_model TEXT NOT NULL DEFAULT 'volume',
-                    roulette_config_json TEXT NOT NULL DEFAULT '{}',
-                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-                );
-                CREATE TABLE roulette_states (
-                    account_id TEXT PRIMARY KEY REFERENCES telegram_accounts(account_id) ON DELETE CASCADE,
-                    step INTEGER NOT NULL DEFAULT 1 CHECK(step >= 1),
-                    activated INTEGER NOT NULL DEFAULT 0 CHECK(activated IN (0,1)),
-                    baseline_equity REAL NOT NULL DEFAULT 0,
-                    completed_batches INTEGER NOT NULL DEFAULT 0,
-                    last_action TEXT,
-                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-                );
-                CREATE TABLE signals (
-                    signal_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    account_id TEXT NOT NULL REFERENCES telegram_accounts(account_id),
-                    source_chat_id INTEGER NOT NULL,
-                    source_message_id INTEGER NOT NULL,
-                    edit_version INTEGER NOT NULL DEFAULT 0,
-                    event_type TEXT NOT NULL,
-                    received_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    telegram_date_utc TEXT,
-                    validity_seconds INTEGER NOT NULL DEFAULT 180,
-                    raw_text TEXT,
-                    payload_json TEXT NOT NULL DEFAULT '{}',
-                    status TEXT NOT NULL DEFAULT 'received',
-                    UNIQUE(account_id, source_chat_id, source_message_id, edit_version)
-                );
-                CREATE INDEX idx_signals_status ON signals(status, signal_id);
-                CREATE TABLE execution_intents (
-                    intent_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    account_id TEXT NOT NULL REFERENCES telegram_accounts(account_id),
-                    signal_id INTEGER REFERENCES signals(signal_id),
-                    client_order_id TEXT NOT NULL UNIQUE,
-                    state TEXT NOT NULL,
-                    plan_json TEXT NOT NULL,
-                    response_json TEXT,
-                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-                );
-                CREATE INDEX idx_intents_state ON execution_intents(state, intent_id);
-                """)
-                db.execute("INSERT INTO schema_migrations(version) VALUES (1)")
+                statements = [
+                    """CREATE TABLE telegram_accounts (
+                        account_id TEXT PRIMARY KEY,
+                        label TEXT NOT NULL,
+                        enabled INTEGER NOT NULL DEFAULT 1 CHECK(enabled IN (0,1)),
+                        roulette_enabled INTEGER NOT NULL DEFAULT 1 CHECK(roulette_enabled IN (0,1)),
+                        roulette_model TEXT NOT NULL DEFAULT 'volume',
+                        roulette_config_json TEXT NOT NULL DEFAULT '{}',
+                        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                    )""",
+                    """CREATE TABLE roulette_states (
+                        account_id TEXT PRIMARY KEY REFERENCES telegram_accounts(account_id) ON DELETE CASCADE,
+                        step INTEGER NOT NULL DEFAULT 1 CHECK(step >= 1),
+                        activated INTEGER NOT NULL DEFAULT 0 CHECK(activated IN (0,1)),
+                        baseline_equity REAL NOT NULL DEFAULT 0,
+                        completed_batches INTEGER NOT NULL DEFAULT 0,
+                        last_action TEXT,
+                        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                    )""",
+                    """CREATE TABLE signals (
+                        signal_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        account_id TEXT NOT NULL REFERENCES telegram_accounts(account_id),
+                        source_chat_id INTEGER NOT NULL,
+                        source_message_id INTEGER NOT NULL,
+                        edit_version INTEGER NOT NULL DEFAULT 0,
+                        event_type TEXT NOT NULL,
+                        received_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                        telegram_date_utc TEXT,
+                        validity_seconds INTEGER NOT NULL DEFAULT 180,
+                        raw_text TEXT,
+                        payload_json TEXT NOT NULL DEFAULT '{}',
+                        status TEXT NOT NULL DEFAULT 'received',
+                        UNIQUE(account_id, source_chat_id, source_message_id, edit_version)
+                    )""",
+                    "CREATE INDEX idx_signals_status ON signals(status, signal_id)",
+                    """CREATE TABLE execution_intents (
+                        intent_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        account_id TEXT NOT NULL REFERENCES telegram_accounts(account_id),
+                        signal_id INTEGER REFERENCES signals(signal_id),
+                        client_order_id TEXT NOT NULL UNIQUE,
+                        state TEXT NOT NULL,
+                        plan_json TEXT NOT NULL,
+                        response_json TEXT,
+                        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                    )""",
+                    "CREATE INDEX idx_intents_state ON execution_intents(state, intent_id)",
+                ]
+                for statement in statements:
+                    conn.execute(statement)
+                conn.execute("INSERT INTO schema_migrations(version) VALUES (1)")
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
 
     def ensure_account(self, account_id: str, label: str,
                        roulette_config: dict[str, Any] | None = None,
@@ -116,8 +129,8 @@ class NixoStore:
                   updated_at=CURRENT_TIMESTAMP""",
                 (account_id, label, int(enabled), int(cfg.get("enabled", True)),
                  model, json.dumps(cfg, separators=(",", ":"), sort_keys=True)))
-            db.execute("""INSERT OR IGNORE INTO roulette_states(account_id)
-                          VALUES (?)""", (account_id,))
+            db.execute("INSERT OR IGNORE INTO roulette_states(account_id) VALUES (?)",
+                       (account_id,))
 
     def record_signal(self, *, account_id: str, chat_id: int, message_id: int,
                       edit_version: int, event_type: str, telegram_date_utc: str | None,
