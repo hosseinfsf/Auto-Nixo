@@ -16,6 +16,7 @@ from logging.handlers import RotatingFileHandler
 
 from dotenv import load_dotenv
 from telethon import TelegramClient, events
+from telethon.sessions import StringSession
 from telethon.tl.types import Message
 
 # ---------------------------------------------------------------------------
@@ -27,6 +28,8 @@ load_dotenv(BASE_DIR / ".env")
 API_ID = int(os.getenv("TELEGRAM_API_ID", "0"))
 API_HASH = os.getenv("TELEGRAM_API_HASH", "")
 SESSION_PATH = BASE_DIR / os.getenv("SESSION_PATH", "session/nixo_listener.session")
+# In-memory session string (no *.session files on disk)
+SESSION_STRING = os.getenv("SESSION_STRING", "")
 QUEUE_DB_PATH = BASE_DIR / os.getenv("QUEUE_DB_PATH", "data/listener_queue.db")
 DEFAULT_VALIDITY_SECONDS = 180
 MAX_MEDIA_SIZE = 10 * 1024 * 1024  # 10 MB
@@ -47,7 +50,7 @@ def init_queue(db_path: Path) -> sqlite3.Connection:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(db_path))
     conn.execute("PRAGMA journal_mode=WAL;")
-    conn.execute("PRAGMA synchronous=NORMAL;")
+    conn.execute("PRAGMA synchronous=FULL;")
     conn.execute("""
         CREATE TABLE IF NOT EXISTS listener_queue (
             id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -93,7 +96,8 @@ def init_sources_table(conn: sqlite3.Connection):
             chat_id      INTEGER PRIMARY KEY,
             title        TEXT,
             enabled      INTEGER NOT NULL DEFAULT 1,
-            ttl_seconds  INTEGER NOT NULL DEFAULT 180
+            ttl_seconds  INTEGER NOT NULL DEFAULT 180,
+            profile_id   TEXT
         );
     """)
     # Migrate older Listener DBs without resetting configured sources.
@@ -101,6 +105,10 @@ def init_sources_table(conn: sqlite3.Connection):
     if "ttl_seconds" not in columns:
         conn.execute(
             "ALTER TABLE sources ADD COLUMN ttl_seconds INTEGER NOT NULL DEFAULT 180"
+        )
+    if "profile_id" not in columns:
+        conn.execute(
+            "ALTER TABLE sources ADD COLUMN profile_id TEXT"
         )
     conn.commit()
 
@@ -151,18 +159,19 @@ def get_allowlisted_chats(conn: sqlite3.Connection):
     return [r[0] for r in cur.fetchall()]
 
 
-def add_source(conn, chat_id, title=None, ttl_seconds=DEFAULT_VALIDITY_SECONDS):
+def add_source(conn, chat_id, title=None, ttl_seconds=DEFAULT_VALIDITY_SECONDS, profile_id=None):
     ttl = int(ttl_seconds)
     if ttl < 1 or ttl > 86400:
         raise ValueError("ttl_seconds must be between 1 and 86400")
     conn.execute("""
-        INSERT INTO sources (chat_id, title, enabled, ttl_seconds)
-        VALUES (?, ?, 1, ?)
+        INSERT INTO sources (chat_id, title, enabled, ttl_seconds, profile_id)
+        VALUES (?, ?, 1, ?, ?)
         ON CONFLICT(chat_id) DO UPDATE SET
             title=COALESCE(excluded.title, sources.title),
             enabled=1,
-            ttl_seconds=excluded.ttl_seconds
-    """, (int(chat_id), title, ttl))
+            ttl_seconds=excluded.ttl_seconds,
+            profile_id=COALESCE(excluded.profile_id, sources.profile_id)
+    """, (int(chat_id), title, ttl, profile_id))
     conn.commit()
 
 
@@ -388,21 +397,56 @@ async def main():
         log.error("TELEGRAM_API_ID and TELEGRAM_API_HASH must be set in .env")
         sys.exit(1)
 
-    SESSION_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = init_queue(QUEUE_DB_PATH)
     init_sources_table(conn)
     media_dir = BASE_DIR / "data" / "media"
 
     # Proxy links remain inert text; the Listener always connects directly.
     log.info("Proxy routing is disabled; any saved proxy link is reference-only.")
-    client = TelegramClient(
-        str(SESSION_PATH),
-        API_ID,
-        API_HASH,
-        auto_reconnect=True,
-        connection_retries=10,
-        retry_delay=5,
-    )
+
+    # Proxy manager: load active proxy from DB if available
+    telethon_proxy = None
+    try:
+        sys.path.insert(0, str(BASE_DIR))
+        from proxy_manager import get_active_proxy, to_telethon_proxy, init_proxy_table
+        init_proxy_table(conn)
+        active_proxy = get_active_proxy(conn)
+        if active_proxy:
+            telethon_proxy = to_telethon_proxy(active_proxy)
+            if telethon_proxy:
+                log.info("Using proxy: %s:%s", active_proxy["host"], active_proxy["port"])
+            else:
+                telethon_proxy = None
+                log.warning("Could not convert proxy to Telethon format, using direct")
+        else:
+            log.info("No active proxy configured, connecting directly")
+    except Exception as e:
+        telethon_proxy = None
+        log.warning("Proxy manager init failed: %s", e)
+
+    # Use in-memory StringSession when SESSION_STRING is set (no *.session files).
+    # Otherwise fall back to the file-based session at SESSION_PATH.
+    if SESSION_STRING:
+        client = TelegramClient(
+            StringSession(SESSION_STRING),
+            API_ID,
+            API_HASH,
+            auto_reconnect=True,
+            connection_retries=10,
+            retry_delay=5,
+            proxy=telethon_proxy,
+        )
+    else:
+        SESSION_PATH.parent.mkdir(parents=True, exist_ok=True)
+        client = TelegramClient(
+            str(SESSION_PATH),
+            API_ID,
+            API_HASH,
+            auto_reconnect=True,
+            connection_retries=10,
+            retry_delay=5,
+            proxy=telethon_proxy,
+        )
 
     allowed_chats = get_allowlisted_chats(conn)
     log.info("Allowlisted chats: %s", allowed_chats)

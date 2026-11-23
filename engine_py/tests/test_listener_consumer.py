@@ -1,3 +1,4 @@
+import contextlib
 import sqlite3
 import tempfile
 import unittest
@@ -25,7 +26,8 @@ class ListenerConsumerTests(unittest.TestCase):
         self.tmp.cleanup()
 
     def _create_queue(self):
-        with sqlite3.connect(self.queue_path) as db:
+        db = sqlite3.connect(self.queue_path)
+        try:
             db.execute("""CREATE TABLE listener_queue (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 chat_id INTEGER NOT NULL,
@@ -50,11 +52,15 @@ class ListenerConsumerTests(unittest.TestCase):
                 processed_at TEXT,
                 UNIQUE(chat_id, message_id, edit_version)
             )""")
+            db.commit()
+        finally:
+            db.close()
 
     def _enqueue(self, *, message_id=55, edit_version=0, update_type="new",
                  date=None, validity=180, chat_id=-100123, text="BUY XAUUSD"):
         stamp = date or (datetime.now(timezone.utc) - timedelta(seconds=5))
-        with sqlite3.connect(self.queue_path) as db:
+        db = sqlite3.connect(self.queue_path)
+        try:
             cur = db.execute(
                 """INSERT INTO listener_queue
                    (chat_id,message_id,edit_version,date_utc,text,update_type,
@@ -63,14 +69,20 @@ class ListenerConsumerTests(unittest.TestCase):
                 (chat_id, message_id, edit_version, stamp.isoformat(), text,
                  update_type, datetime.now(timezone.utc).isoformat(), validity),
             )
+            db.commit()
             return cur.lastrowid
+        finally:
+            db.close()
 
     def _queue_row(self, queue_id):
-        with sqlite3.connect(self.queue_path) as db:
+        db = sqlite3.connect(self.queue_path)
+        try:
             db.row_factory = sqlite3.Row
             return dict(db.execute(
                 "SELECT * FROM listener_queue WHERE id=?", (queue_id,)
             ).fetchone())
+        finally:
+            db.close()
 
     def test_new_message_is_durably_routed_then_acknowledged(self):
         qid = self._enqueue()

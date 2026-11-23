@@ -16,8 +16,28 @@ class NixoStore:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.migrate()
 
+    class _ClosingConnection(sqlite3.Connection):
+        """sqlite3.Connection subclass whose __exit__ closes the handle.
+
+        sqlite3.Connection.__exit__ only commits/rollbacks; it does NOT close.
+        On Windows this leaves the .db file locked, causing PermissionError
+        when tempfile.TemporaryDirectory tries to delete it.
+        """
+
+        def __exit__(self, exc_type, exc_val, exc_tb) -> bool:
+            try:
+                if exc_type is None:
+                    self.commit()
+                else:
+                    self.rollback()
+            finally:
+                self.close()
+            return False
+
     def connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(str(self.path), timeout=10.0)
+        conn = sqlite3.connect(
+            str(self.path), timeout=10.0, factory=self._ClosingConnection
+        )
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys=ON")
         conn.execute("PRAGMA busy_timeout=10000")

@@ -1,7 +1,10 @@
-# NIXO Listener — pinned dependencies
+# NIXO Listener ï¿½ pinned dependencies
 # Install: pip install -r requirements.txt
 # Note: Telethon 1.46 prefers python-socks over PySocks.
 #       python-socks is the recommended package.
 Telethon==1.46.0
 python-socks==3.2.2
 python-dotenv==1.0.1
+fastapi==0.115.0
+uvicorn[standard]==0.30.0
+pydantic==2.9.0

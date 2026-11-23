@@ -1,5 +1,5 @@
 """
-NIXO Listener API — localhost HTTP server for the Management Panel.
+NIXO Listener API — FastAPI localhost HTTP server for the Management Panel.
 
 Endpoints:
   GET  /api/listener/status   -> {running, pid, log, status}
@@ -21,8 +21,13 @@ import signal
 import hmac
 import hashlib
 from pathlib import Path
-from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse
+
+from fastapi import FastAPI, Request, HTTPException, Depends
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field
+import uvicorn
 
 BASE_DIR = Path(__file__).resolve().parent
 DB_PATH = BASE_DIR / "data" / "listener_queue.db"
@@ -49,6 +54,17 @@ if not LISTENER_API_TOKEN:
     print("ERROR: LISTENER_API_TOKEN must be set in listener/.env")
     sys.exit(1)
 
+app = FastAPI(title="NIXO Listener API", docs_url=None, redoc_url=None)
+
+# Exact-origin CORS (only the panel origin)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[PANEL_ORIGIN],
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization"],
+)
+
 
 def get_db():
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -60,7 +76,8 @@ def get_db():
             chat_id INTEGER PRIMARY KEY,
             title TEXT,
             enabled INTEGER NOT NULL DEFAULT 1,
-            ttl_seconds INTEGER NOT NULL DEFAULT 180
+            ttl_seconds INTEGER NOT NULL DEFAULT 180,
+            profile_id TEXT
         )
     """)
     columns = {row[1] for row in conn.execute("PRAGMA table_info(sources)")}
@@ -68,261 +85,268 @@ def get_db():
         conn.execute(
             "ALTER TABLE sources ADD COLUMN ttl_seconds INTEGER NOT NULL DEFAULT 180"
         )
+    if "profile_id" not in columns:
+        conn.execute(
+            "ALTER TABLE sources ADD COLUMN profile_id TEXT"
+        )
     conn.commit()
     return conn
 
 
-class Handler(BaseHTTPRequestHandler):
-    def _cors(self):
-        self.send_header("Access-Control-Allow-Origin", PANEL_ORIGIN)
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
-        self.send_header("Vary", "Origin")
+def _authorized(request: Request) -> bool:
+    auth = request.headers.get("authorization", "")
+    if not auth.startswith("Bearer "):
+        return False
+    token = auth[7:]
+    return hmac.compare_digest(token, LISTENER_API_TOKEN)
 
-    def _json(self, data, status=200):
-        body = json.dumps(data).encode()
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json")
-        self._cors()
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
 
-    def _read_body(self):
-        length = int(self.headers.get("Content-Length", 0))
-        if length > MAX_BODY_SIZE:
-            raise ValueError("Body too large")
-        if length:
-            raw = self.rfile.read(length)
-            return json.loads(raw)
-        return {}
+def _validate_host_origin(request: Request) -> bool:
+    host = request.headers.get("host", "")
+    origin = request.headers.get("origin", "")
+    allowed_hosts = {"127.0.0.1", "localhost"}
+    host_ok = host.split(":")[0] in allowed_hosts
+    origin_ok = True
+    if origin:
+        origin_ok = origin.startswith("http://127.0.0.1") or origin.startswith("http://localhost")
+    return host_ok and origin_ok
 
-    def _authorized(self):
-        auth = self.headers.get("Authorization", "")
-        if not auth.startswith("Bearer "):
-            return False
-        token = auth[7:]
-        return hmac.compare_digest(token, LISTENER_API_TOKEN)
 
-    def _validate_host_origin(self):
-        host = self.headers.get("Host", "")
-        origin = self.headers.get("Origin", "")
-        allowed_hosts = {"127.0.0.1", "localhost"}
-        host_ok = host.split(":")[0] in allowed_hosts
-        origin_ok = True
-        if origin:
-            origin_ok = origin.startswith("http://127.0.0.1") or origin.startswith("http://localhost")
-        return host_ok and origin_ok
+@app.middleware("http")
+async def security_middleware(request: Request, call_next):
+    if not _validate_host_origin(request):
+        return JSONResponse({"error": "forbidden"}, status_code=403)
+    if not _authorized(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    # Body size limit
+    content_length = request.headers.get("content-length")
+    if content_length and int(content_length) > MAX_BODY_SIZE:
+        return JSONResponse({"error": "Body too large"}, status_code=413)
+    return await call_next(request)
 
-    def do_OPTIONS(self):
-        self.send_response(204)
-        self._cors()
-        self.end_headers()
 
-    def do_GET(self):
-        if not self._validate_host_origin():
-            self._json({"error": "forbidden"}, 403)
-            return
-        if not self._authorized():
-            self._json({"error": "unauthorized"}, 401)
-            return
-        path = urlparse(self.path).path
+# --- Pydantic models ---
 
-        if path == "/api/listener/status":
+class SourceIn(BaseModel):
+    chat_id: int
+    ttl_seconds: int = Field(default=180, ge=1, le=86400)
+    title: str | None = None
+    enabled: bool = True
+
+
+class SourceRemoveIn(BaseModel):
+    chat_id: int
+
+
+class ProxyLinkIn(BaseModel):
+    link: str = ""
+
+
+# --- Endpoints ---
+
+@app.get("/api/listener/status")
+async def listener_status():
+    running = False
+    pid = None
+    if PID_FILE.exists():
+        try:
+            pid = int(PID_FILE.read_text().strip())
+            os.kill(pid, 0)
+            running = True
+        except (ValueError, OSError, ProcessLookupError):
             running = False
             pid = None
-            if PID_FILE.exists():
-                try:
-                    pid = int(PID_FILE.read_text().strip())
-                    os.kill(pid, 0)
-                    running = True
-                except (ValueError, OSError, ProcessLookupError):
-                    running = False
-                    pid = None
-            log_tail = ""
-            log_file = BASE_DIR / "data" / "listener.log"
-            if log_file.exists():
-                lines = log_file.read_text().splitlines()
-                log_tail = "\n".join(lines[-50:])
-            status_json = {}
-            if STATUS_FILE.exists():
-                try:
-                    status_json = json.loads(STATUS_FILE.read_text())
-                except Exception:
-                    pass
-            self._json({"running": running, "pid": pid, "log": log_tail, "status": status_json})
-
-        elif path == "/api/sources":
-            conn = get_db()
-            rows = conn.execute(
-                "SELECT chat_id, title, enabled, ttl_seconds FROM sources ORDER BY chat_id"
-            ).fetchall()
-            conn.close()
-            self._json({"sources": [dict(r) for r in rows]})
-
-        elif path == "/api/proxy/link":
-            configured = PROXY_LINK_FILE.exists() and PROXY_LINK_FILE.stat().st_size > 0
-            self._json({"configured": configured, "mode": "text_only"})
-
-        elif path == "/api/proxy/list":
-            self._json({
-                "error": "proxy activation, routing and testing are disabled",
-                "mode": "text_only",
-            }, 410)
-
-        elif path == "/api/queue/stats":
-            conn = get_db()
-            total = conn.execute("SELECT COUNT(*) FROM listener_queue").fetchone()[0]
-            pending = conn.execute("SELECT COUNT(*) FROM listener_queue WHERE state='pending'").fetchone()[0]
-            processed = conn.execute("SELECT COUNT(*) FROM listener_queue WHERE state='processed'").fetchone()[0]
-            processing = conn.execute("SELECT COUNT(*) FROM listener_queue WHERE state='processing'").fetchone()[0]
-            failed = conn.execute("SELECT COUNT(*) FROM listener_queue WHERE state='failed'").fetchone()[0]
-            expired = conn.execute("SELECT COUNT(*) FROM listener_queue WHERE state='expired'").fetchone()[0]
-            deleted = conn.execute("SELECT COUNT(*) FROM listener_queue WHERE state='deleted'").fetchone()[0]
-            conn.close()
-            self._json({"total": total, "pending": pending, "processing": processing,
-                        "processed": processed, "failed": failed, "expired": expired,
-                        "deleted": deleted})
-
-        elif path == "/api/queue/recent":
-            conn = get_db()
-            rows = conn.execute(
-                "SELECT chat_id, message_id, edit_version, update_type, state, date_utc, attempts, error FROM listener_queue ORDER BY id DESC LIMIT 20"
-            ).fetchall()
-            self._json({"rows": [dict(r) for r in rows]})
-            conn.close()
-
-        else:
-            self._json({"error": "not found"}, 404)
-
-    def do_POST(self):
-        if not self._validate_host_origin():
-            self._json({"error": "forbidden"}, 403)
-            return
-        if not self._authorized():
-            self._json({"error": "unauthorized"}, 401)
-            return
-        path = urlparse(self.path).path
+    log_tail = ""
+    log_file = BASE_DIR / "data" / "listener.log"
+    if log_file.exists():
+        lines = log_file.read_text().splitlines()
+        log_tail = "\n".join(lines[-50:])
+    status_json = {}
+    if STATUS_FILE.exists():
         try:
-            body = self._read_body()
-        except Exception as e:
-            self._json({"error": str(e)}, 400)
-            return
+            status_json = json.loads(STATUS_FILE.read_text())
+        except Exception:
+            pass
+    return {"running": running, "pid": pid, "log": log_tail, "status": status_json}
 
-        if path == "/api/listener/start":
-            if PID_FILE.exists():
-                try:
-                    pid = int(PID_FILE.read_text().strip())
-                    os.kill(pid, 0)
-                    self._json({"message": "Listener already running", "pid": pid})
-                    return
-                except (ValueError, OSError, ProcessLookupError):
-                    PID_FILE.unlink(missing_ok=True)
 
-            log_file = BASE_DIR / "data" / "listener.log"
-            log_file.parent.mkdir(parents=True, exist_ok=True)
-            with open(log_file, "a") as f:
-                proc = subprocess.Popen(
-                    [PYTHON, str(LISTENER_SCRIPT)],
-                    cwd=str(BASE_DIR),
-                    stdout=f,
-                    stderr=subprocess.STDOUT,
-                )
-            PID_FILE.write_text(str(proc.pid))
-            self._json({"message": "Listener started", "pid": proc.pid})
+@app.post("/api/listener/start")
+async def listener_start():
+    if PID_FILE.exists():
+        try:
+            pid = int(PID_FILE.read_text().strip())
+            os.kill(pid, 0)
+            return {"message": "Listener already running", "pid": pid}
+        except (ValueError, OSError, ProcessLookupError):
+            PID_FILE.unlink(missing_ok=True)
 
-        elif path == "/api/listener/stop":
-            if not PID_FILE.exists():
-                self._json({"message": "Listener not running"})
-                return
-            try:
-                pid = int(PID_FILE.read_text().strip())
-                os.kill(pid, signal.SIGTERM)
-                PID_FILE.unlink(missing_ok=True)
-                self._json({"message": "Listener stopped"})
-            except (ValueError, OSError, ProcessLookupError):
-                PID_FILE.unlink(missing_ok=True)
-                self._json({"message": "Listener not running"})
+    log_file = BASE_DIR / "data" / "listener.log"
+    log_file.parent.mkdir(parents=True, exist_ok=True)
+    with open(log_file, "a") as f:
+        proc = subprocess.Popen(
+            [PYTHON, str(LISTENER_SCRIPT)],
+            cwd=str(BASE_DIR),
+            stdout=f,
+            stderr=subprocess.STDOUT,
+        )
+    PID_FILE.write_text(str(proc.pid))
+    return {"message": "Listener started", "pid": proc.pid}
 
-        elif path == "/api/sources":
-            try:
-                chat_id = int(body.get("chat_id", 0))
-                ttl_seconds = int(body.get("ttl_seconds", 180))
-                title = body.get("title")
-                enabled = 1 if body.get("enabled", True) is True else 0
-                if chat_id == 0:
-                    raise ValueError("chat_id must be a non-zero integer")
-                if ttl_seconds < 1 or ttl_seconds > 86400:
-                    raise ValueError("ttl_seconds must be between 1 and 86400")
-                conn = get_db()
-                conn.execute("""
-                    INSERT INTO sources (chat_id, title, enabled, ttl_seconds)
-                    VALUES (?, ?, ?, ?)
-                    ON CONFLICT(chat_id) DO UPDATE SET
-                        title=excluded.title,
-                        enabled=excluded.enabled,
-                        ttl_seconds=excluded.ttl_seconds
-                """, (chat_id, title, enabled, ttl_seconds))
-                conn.commit()
-                conn.close()
-                self._json({"ok": True, "chat_id": chat_id, "ttl_seconds": ttl_seconds})
-            except (TypeError, ValueError, sqlite3.Error) as e:
-                self._json({"error": str(e)}, 400)
 
-        elif path == "/api/sources/remove":
-            try:
-                chat_id = int(body.get("chat_id", 0))
-                if chat_id == 0:
-                    raise ValueError("chat_id must be a non-zero integer")
-                conn = get_db()
-                conn.execute("DELETE FROM sources WHERE chat_id=?", (chat_id,))
-                conn.commit()
-                conn.close()
-                self._json({"ok": True, "chat_id": chat_id})
-            except (TypeError, ValueError, sqlite3.Error) as e:
-                self._json({"error": str(e)}, 400)
+@app.post("/api/listener/stop")
+async def listener_stop():
+    if not PID_FILE.exists():
+        return {"message": "Listener not running"}
+    try:
+        pid = int(PID_FILE.read_text().strip())
+        os.kill(pid, signal.SIGTERM)
+        PID_FILE.unlink(missing_ok=True)
+        return {"message": "Listener stopped"}
+    except (ValueError, OSError, ProcessLookupError):
+        PID_FILE.unlink(missing_ok=True)
+        return {"message": "Listener not running"}
 
-        elif path == "/api/proxy/link":
-            link = body.get("link", "")
-            if not isinstance(link, str):
-                self._json({"error": "link must be a string"}, 400)
-                return
-            link = link.strip()
-            if link:
-                parsed = urlparse(link)
-                if (parsed.scheme != "https" or parsed.netloc.lower() != "t.me"
-                        or parsed.path != "/proxy" or not parsed.query
-                        or any(ch.isspace() for ch in link)):
-                    self._json({"error": "expected a complete https://t.me/proxy?... link"}, 400)
-                    return
-                PROXY_LINK_FILE.parent.mkdir(parents=True, exist_ok=True)
-                PROXY_LINK_FILE.write_text(link, encoding="utf-8")
-            else:
-                PROXY_LINK_FILE.unlink(missing_ok=True)
-            # Never echo or log the complete URL; its query can contain a secret.
-            self._json({"ok": True, "configured": bool(link), "mode": "text_only"})
 
-        elif path in ("/api/proxy/add", "/api/proxy/test", "/api/proxy/remove"):
-            self._json({
-                "error": "proxy activation, routing and testing are disabled; use /api/proxy/link for text-only storage",
-                "mode": "text_only",
-            }, 410)
+@app.get("/api/sources")
+async def sources_list():
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT chat_id, title, enabled, ttl_seconds FROM sources ORDER BY chat_id"
+    ).fetchall()
+    conn.close()
+    return {"sources": [dict(r) for r in rows]}
 
-        else:
-            self._json({"error": "not found"}, 404)
 
-    def log_message(self, format, *args):
-        pass
+@app.post("/api/sources")
+async def sources_add(body: SourceIn):
+    try:
+        chat_id = int(body.chat_id)
+        ttl_seconds = int(body.ttl_seconds)
+        title = body.title
+        enabled = 1 if body.enabled else 0
+        if chat_id == 0:
+            raise ValueError("chat_id must be a non-zero integer")
+        if ttl_seconds < 1 or ttl_seconds > 86400:
+            raise ValueError("ttl_seconds must be between 1 and 86400")
+        conn = get_db()
+        conn.execute("""
+            INSERT INTO sources (chat_id, title, enabled, ttl_seconds)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(chat_id) DO UPDATE SET
+                title=excluded.title,
+                enabled=excluded.enabled,
+                ttl_seconds=excluded.ttl_seconds
+        """, (chat_id, title, enabled, ttl_seconds))
+        conn.commit()
+        conn.close()
+        return {"ok": True, "chat_id": chat_id, "ttl_seconds": ttl_seconds}
+    except (TypeError, ValueError, sqlite3.Error) as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/sources/remove")
+async def sources_remove(body: SourceRemoveIn):
+    try:
+        chat_id = int(body.chat_id)
+        if chat_id == 0:
+            raise ValueError("chat_id must be a non-zero integer")
+        conn = get_db()
+        conn.execute("DELETE FROM sources WHERE chat_id=?", (chat_id,))
+        conn.commit()
+        conn.close()
+        return {"ok": True, "chat_id": chat_id}
+    except (TypeError, ValueError, sqlite3.Error) as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/api/proxy/link")
+async def proxy_link_get():
+    configured = PROXY_LINK_FILE.exists() and PROXY_LINK_FILE.stat().st_size > 0
+    return {"configured": configured, "mode": "text_only"}
+
+
+@app.post("/api/proxy/link")
+async def proxy_link_set(body: ProxyLinkIn):
+    link = body.link.strip() if isinstance(body.link, str) else ""
+    if link:
+        parsed = urlparse(link)
+        if (parsed.scheme != "https" or parsed.netloc.lower() != "t.me"
+                or parsed.path != "/proxy" or not parsed.query
+                or any(ch.isspace() for ch in link)):
+            raise HTTPException(status_code=400, detail="expected a complete https://t.me/proxy?... link")
+        PROXY_LINK_FILE.parent.mkdir(parents=True, exist_ok=True)
+        PROXY_LINK_FILE.write_text(link, encoding="utf-8")
+    else:
+        PROXY_LINK_FILE.unlink(missing_ok=True)
+    # Never echo or log the complete URL; its query can contain a secret.
+    return {"ok": True, "configured": bool(link), "mode": "text_only"}
+
+
+@app.get("/api/proxy/list")
+async def proxy_list():
+    return JSONResponse(
+        {"error": "proxy activation, routing and testing are disabled",
+         "mode": "text_only"},
+        status_code=410,
+    )
+
+
+@app.post("/api/proxy/add")
+async def proxy_add():
+    return JSONResponse(
+        {"error": "proxy activation, routing and testing are disabled; use /api/proxy/link for text-only storage",
+         "mode": "text_only"},
+        status_code=410,
+    )
+
+
+@app.post("/api/proxy/test")
+async def proxy_test():
+    return JSONResponse(
+        {"error": "proxy activation, routing and testing are disabled; use /api/proxy/link for text-only storage",
+         "mode": "text_only"},
+        status_code=410,
+    )
+
+
+@app.post("/api/proxy/remove")
+async def proxy_remove():
+    return JSONResponse(
+        {"error": "proxy activation, routing and testing are disabled; use /api/proxy/link for text-only storage",
+         "mode": "text_only"},
+        status_code=410,
+    )
+
+
+@app.get("/api/queue/stats")
+async def queue_stats():
+    conn = get_db()
+    total = conn.execute("SELECT COUNT(*) FROM listener_queue").fetchone()[0]
+    pending = conn.execute("SELECT COUNT(*) FROM listener_queue WHERE state='pending'").fetchone()[0]
+    processed = conn.execute("SELECT COUNT(*) FROM listener_queue WHERE state='processed'").fetchone()[0]
+    processing = conn.execute("SELECT COUNT(*) FROM listener_queue WHERE state='processing'").fetchone()[0]
+    failed = conn.execute("SELECT COUNT(*) FROM listener_queue WHERE state='failed'").fetchone()[0]
+    expired = conn.execute("SELECT COUNT(*) FROM listener_queue WHERE state='expired'").fetchone()[0]
+    deleted = conn.execute("SELECT COUNT(*) FROM listener_queue WHERE state='deleted'").fetchone()[0]
+    conn.close()
+    return {"total": total, "pending": pending, "processing": processing,
+            "processed": processed, "failed": failed, "expired": expired,
+            "deleted": deleted}
+
+
+@app.get("/api/queue/recent")
+async def queue_recent():
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT chat_id, message_id, edit_version, update_type, state, date_utc, attempts, error FROM listener_queue ORDER BY id DESC LIMIT 20"
+    ).fetchall()
+    result = {"rows": [dict(r) for r in rows]}
+    conn.close()
+    return result
 
 
 def main():
-    server = HTTPServer(("127.0.0.1", PORT), Handler)
-    print(f"Listener API running on http://127.0.0.1:{PORT}")
-    try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        print("Shutting down...")
-        server.shutdown()
+    uvicorn.run(app, host="127.0.0.1", port=PORT, log_level="info")
 
 
 if __name__ == "__main__":

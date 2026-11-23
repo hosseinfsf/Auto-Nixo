@@ -58,7 +58,15 @@ class ListenerQueueConsumer:
         self.max_attempts = int(max_attempts)
 
     def _connect_queue(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(str(self.queue_db_path), timeout=10.0)
+        # Use the same closing-connection subclass as NixoStore so that
+        # `with self._connect_queue() as db:` closes the handle on exit.
+        # sqlite3.Connection.__exit__ only commits/rollbacks, never closes,
+        # which leaves the .db file locked on Windows.
+        from nixo_engine.db import NixoStore
+
+        conn = sqlite3.connect(
+            str(self.queue_db_path), timeout=10.0, factory=NixoStore._ClosingConnection
+        )
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA busy_timeout=10000")
         return conn
