@@ -262,17 +262,21 @@ class Pipeline {
       clientOrderId: signalId,
     );
 
-    // 6. Execute or shadow.
-    if (mode == ProfileMode.shadow || mode == ProfileMode.confirm) {
+    // 6. Execute only when Dry Run has been explicitly disabled.
+    // Missing, malformed or enabled settings all fail closed.
+    final dryRunEnabled = db.getSetting('mt5_dry_run') != '0';
+    if (dryRunEnabled || mode == ProfileMode.shadow || mode == ProfileMode.confirm) {
+      final reason = dryRunEnabled
+          ? 'mt5_dry_run_enabled'
+          : (mode == ProfileMode.confirm ? 'confirm mode' : 'shadow mode');
       db.insertDecision({
         'signal_id': signalId,
         'action': 'shadow',
-        'reason': mode == ProfileMode.confirm ? 'confirm mode' : 'shadow mode',
+        'reason': reason,
         'sizing': jsonEncode(sizing.toJson()),
         'order_json': jsonEncode(order.toJson()),
       });
-      return _decision(signalId, DecisionAction.shadow,
-          mode == ProfileMode.confirm ? 'confirm mode' : 'shadow mode');
+      return _decision(signalId, DecisionAction.shadow, reason);
     }
 
     final ack = await executor.open(order);

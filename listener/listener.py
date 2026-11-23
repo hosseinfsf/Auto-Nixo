@@ -9,7 +9,6 @@ import asyncio
 import hashlib
 import sqlite3
 import logging
-import time
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -18,12 +17,6 @@ from logging.handlers import RotatingFileHandler
 from dotenv import load_dotenv
 from telethon import TelegramClient, events
 from telethon.tl.types import Message
-from telethon.sessions import StringSession
-from telethon.network.connection import (
-    ConnectionTcpMTProxyAbridged,
-    ConnectionTcpMTProxyIntermediate,
-    ConnectionTcpMTProxyRandomizedIntermediate,
-)
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -35,14 +28,8 @@ API_ID = int(os.getenv("TELEGRAM_API_ID", "0"))
 API_HASH = os.getenv("TELEGRAM_API_HASH", "")
 SESSION_PATH = BASE_DIR / os.getenv("SESSION_PATH", "session/nixo_listener.session")
 QUEUE_DB_PATH = BASE_DIR / os.getenv("QUEUE_DB_PATH", "data/listener_queue.db")
-VALIDITY_SECONDS = int(os.getenv("VALIDITY_SECONDS", "300"))
+DEFAULT_VALIDITY_SECONDS = 180
 MAX_MEDIA_SIZE = 10 * 1024 * 1024  # 10 MB
-
-# Proxy config
-PROXY_TYPE = os.getenv("PROXY_TYPE", "").strip().lower()
-PROXY_HOST = os.getenv("PROXY_HOST", "").strip()
-PROXY_PORT = int(os.getenv("PROXY_PORT", "0")) if os.getenv("PROXY_PORT", "").strip() else 0
-PROXY_SECRET = os.getenv("PROXY_SECRET", "").strip()
 
 # Logging with rotation
 log_file = BASE_DIR / "data" / "listener.log"
@@ -90,30 +77,18 @@ def init_queue(db_path: Path) -> sqlite3.Connection:
 def init_sources_table(conn: sqlite3.Connection):
     conn.execute("""
         CREATE TABLE IF NOT EXISTS sources (
-            chat_id  INTEGER PRIMARY KEY,
-            title    TEXT,
-            enabled  INTEGER NOT NULL DEFAULT 1
+            chat_id      INTEGER PRIMARY KEY,
+            title        TEXT,
+            enabled      INTEGER NOT NULL DEFAULT 1,
+            ttl_seconds  INTEGER NOT NULL DEFAULT 180
         );
     """)
-    conn.commit()
-
-
-def init_proxy_table(conn: sqlite3.Connection):
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS proxy_list (
-            id            INTEGER PRIMARY KEY AUTOINCREMENT,
-            type          TEXT NOT NULL,
-            host          TEXT NOT NULL,
-            port          INTEGER NOT NULL,
-            secret        TEXT,
-            priority      INTEGER NOT NULL DEFAULT 0,
-            status        TEXT NOT NULL DEFAULT 'active',
-            latency_ms    REAL,
-            last_check    TEXT,
-            fail_count    INTEGER NOT NULL DEFAULT 0,
-            UNIQUE(type, host, port)
-        );
-    """)
+    # Migrate older Listener DBs without resetting configured sources.
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(sources)")}
+    if "ttl_seconds" not in columns:
+        conn.execute(
+            "ALTER TABLE sources ADD COLUMN ttl_seconds INTEGER NOT NULL DEFAULT 180"
+        )
     conn.commit()
 
 
@@ -162,9 +137,28 @@ def get_allowlisted_chats(conn: sqlite3.Connection):
     return [r[0] for r in cur.fetchall()]
 
 
-def add_source(conn, chat_id, title=None):
-    conn.execute("INSERT OR REPLACE INTO sources (chat_id, title, enabled) VALUES (?, ?, 1)", (chat_id, title))
+def add_source(conn, chat_id, title=None, ttl_seconds=DEFAULT_VALIDITY_SECONDS):
+    ttl = int(ttl_seconds)
+    if ttl < 1 or ttl > 86400:
+        raise ValueError("ttl_seconds must be between 1 and 86400")
+    conn.execute("""
+        INSERT INTO sources (chat_id, title, enabled, ttl_seconds)
+        VALUES (?, ?, 1, ?)
+        ON CONFLICT(chat_id) DO UPDATE SET
+            title=COALESCE(excluded.title, sources.title),
+            enabled=1,
+            ttl_seconds=excluded.ttl_seconds
+    """, (int(chat_id), title, ttl))
     conn.commit()
+
+
+def source_validity_seconds(conn, chat_id):
+    row = conn.execute(
+        "SELECT ttl_seconds FROM sources WHERE chat_id=? AND enabled=1",
+        (chat_id,),
+    ).fetchone()
+    ttl = int(row[0]) if row and row[0] is not None else DEFAULT_VALIDITY_SECONDS
+    return ttl if 1 <= ttl <= 86400 else DEFAULT_VALIDITY_SECONDS
 
 
 def remove_source(conn, chat_id):
@@ -175,79 +169,6 @@ def remove_source(conn, chat_id):
 def toggle_source(conn, chat_id, enabled):
     conn.execute("UPDATE sources SET enabled=? WHERE chat_id=?", (1 if enabled else 0, chat_id))
     conn.commit()
-
-
-# ---------------------------------------------------------------------------
-# Proxy management
-# ---------------------------------------------------------------------------
-def add_proxy(conn, ptype, host, port, secret=None, priority=0):
-    try:
-        conn.execute("""
-            INSERT OR IGNORE INTO proxy_list (type, host, port, secret, priority, status)
-            VALUES (?, ?, ?, ?, ?, 'active')
-        """, (ptype, host, port, secret, priority))
-        conn.commit()
-        log.info("Proxy added: %s %s:%d", ptype, host, port)
-    except sqlite3.Error as e:
-        log.error("add_proxy error: %s", e)
-
-
-def update_proxy_status(conn, ptype, host, port, status, latency_ms=None, fail_count=None):
-    sets = ["status = ?", "last_check = ?"]
-    params = [status, datetime.now(timezone.utc).isoformat()]
-    if latency_ms is not None:
-        sets.append("latency_ms = ?")
-        params.append(latency_ms)
-    if fail_count is not None:
-        sets.append("fail_count = ?")
-        params.append(fail_count)
-    params.extend([ptype, host, port])
-    conn.execute(f"UPDATE proxy_list SET {', '.join(sets)} WHERE type=? AND host=? AND port=?", params)
-    conn.commit()
-
-
-def get_active_proxies(conn):
-    cur = conn.execute(
-        "SELECT type, host, port, secret, priority FROM proxy_list WHERE status='active' ORDER BY priority ASC, latency_ms ASC"
-    )
-    return cur.fetchall()
-
-
-def get_next_proxy(conn, current_host=None):
-    proxies = get_active_proxies(conn)
-    for ptype, host, port, secret, priority in proxies:
-        if host != current_host:
-            return ptype, host, port, secret
-    return None
-
-
-# ---------------------------------------------------------------------------
-# Proxy health check (real MTProto handshake, in-memory session)
-# ---------------------------------------------------------------------------
-async def check_proxy_health(ptype, host, port, secret=None):
-    """Try a real connection through the proxy. Return (ok, latency_ms, error)."""
-    start = time.monotonic()
-    try:
-        if ptype == "mtproto":
-            proxy = (host, port, secret) if secret else (host, port)
-            conn_class = ConnectionTcpMTProxyRandomizedIntermediate
-            test_client = TelegramClient(StringSession(""), API_ID, API_HASH, proxy=proxy, connection=conn_class)
-        elif ptype == "socks5":
-            proxy = ("socks5", host, port)
-            test_client = TelegramClient(StringSession(""), API_ID, API_HASH, proxy=proxy)
-        elif ptype == "http":
-            proxy = ("http", host, port)
-            test_client = TelegramClient(StringSession(""), API_ID, API_HASH, proxy=proxy)
-        else:
-            return False, 0, "unknown proxy type"
-
-        await test_client.connect()
-        latency = (time.monotonic() - start) * 1000
-        await test_client.disconnect()
-        return True, round(latency, 1), None
-    except Exception as e:
-        latency = (time.monotonic() - start) * 1000
-        return False, round(latency, 1), str(e)
 
 
 # ---------------------------------------------------------------------------
@@ -288,13 +209,15 @@ async def download_media(client, msg, media_dir: Path):
 # ---------------------------------------------------------------------------
 # Message handlers
 # ---------------------------------------------------------------------------
-def make_row(msg, update_type, media_path=None, media_hash=None, edit_version=0, content_hash_val=None):
+def make_row(msg, update_type, media_path=None, media_hash=None, edit_version=0,
+             content_hash_val=None, validity_seconds=DEFAULT_VALIDITY_SECONDS):
     date_utc = msg.date.astimezone(timezone.utc).isoformat() if msg.date else datetime.now(timezone.utc).isoformat()
     state = "pending"
-    if VALIDITY_SECONDS > 0 and msg.date:
+    validity = int(validity_seconds)
+    if validity > 0 and msg.date:
         msg_date = msg.date.astimezone(timezone.utc)
         age = (datetime.now(timezone.utc) - msg_date).total_seconds()
-        if age > VALIDITY_SECONDS:
+        if age > validity:
             state = "expired"
     return {
         "chat_id": msg.chat_id,
@@ -318,7 +241,10 @@ async def handle_new_message(client, conn, msg, media_dir, allowed_chats):
         return
     media_path, media_hash = await download_media(client, msg, media_dir)
     ch = content_hash(msg.text if hasattr(msg, "text") else None, None, media_hash)
-    row = make_row(msg, "new", media_path, media_hash, content_hash_val=ch)
+    row = make_row(
+        msg, "new", media_path, media_hash, content_hash_val=ch,
+        validity_seconds=source_validity_seconds(conn, msg.chat_id),
+    )
     inserted = enqueue(conn, row)
     if inserted:
         log.info("NEW msg %s/%s ingested", msg.chat_id, msg.id)
@@ -348,7 +274,11 @@ async def handle_edit(client, conn, event, media_dir, allowed_chats):
         (msg.chat_id, msg.id),
     )
     max_ver = cur.fetchone()[0]
-    row = make_row(msg, "edit", media_path, media_hash, edit_version=max_ver + 1, content_hash_val=ch)
+    row = make_row(
+        msg, "edit", media_path, media_hash, edit_version=max_ver + 1,
+        content_hash_val=ch,
+        validity_seconds=source_validity_seconds(conn, msg.chat_id),
+    )
     inserted = enqueue(conn, row)
     if inserted:
         log.info("EDIT msg %s/%s v%d ingested", msg.chat_id, msg.id, row["edit_version"])
@@ -392,44 +322,24 @@ async def catchup(client, conn, chat_id, media_dir, allowed_chats):
     async for msg in client.iter_messages(chat_id, offset_date=offset_date, reverse=True, limit=200):
         media_path, media_hash = await download_media(client, msg, media_dir)
         ch = content_hash(msg.text if hasattr(msg, "text") else None, None, media_hash)
-        row = make_row(msg, "new", media_path, media_hash, content_hash_val=ch)
+        row = make_row(
+            msg, "new", media_path, media_hash, content_hash_val=ch,
+            validity_seconds=source_validity_seconds(conn, chat_id),
+        )
         if enqueue(conn, row):
             count += 1
     log.info("Catch-up complete for %s: %d new messages", chat_id, count)
 
 
 # ---------------------------------------------------------------------------
-# Proxy factory
-# ---------------------------------------------------------------------------
-def build_proxy_config():
-    if not PROXY_TYPE or not PROXY_HOST or not PROXY_PORT:
-        return None, None
-    if PROXY_TYPE == "mtproto":
-        if not PROXY_SECRET:
-            log.warning("MTProto proxy requires a secret; falling back to direct")
-            return None, None
-        proxy = (PROXY_HOST, PROXY_PORT, PROXY_SECRET)
-        return proxy, ConnectionTcpMTProxyRandomizedIntermediate
-    elif PROXY_TYPE == "socks5":
-        proxy = ("socks5", PROXY_HOST, PROXY_PORT)
-        return proxy, None
-    elif PROXY_TYPE == "http":
-        proxy = ("http", PROXY_HOST, PROXY_PORT)
-        return proxy, None
-    else:
-        log.warning("Unknown proxy type: %s; using direct", PROXY_TYPE)
-        return None, None
-
-
-# ---------------------------------------------------------------------------
 # Status file
 # ---------------------------------------------------------------------------
-def write_status(conn, authorized, connected, current_proxy, last_event_at, last_error):
+def write_status(conn, authorized, connected, last_event_at, last_error):
     try:
         status = {
             "authorized": authorized,
             "connected": connected,
-            "current_proxy": current_proxy,
+            "proxy_mode": "disabled",
             "last_event_at": last_event_at,
             "queue_depth": conn.execute("SELECT COUNT(*) FROM listener_queue WHERE state='pending'").fetchone()[0],
             "last_error": last_error,
@@ -453,32 +363,18 @@ async def main():
     SESSION_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = init_queue(QUEUE_DB_PATH)
     init_sources_table(conn)
-    init_proxy_table(conn)
     media_dir = BASE_DIR / "data" / "media"
 
-    # Register proxy from .env if configured
-    if PROXY_TYPE and PROXY_HOST and PROXY_PORT:
-        add_proxy(conn, PROXY_TYPE, PROXY_HOST, PROXY_PORT, PROXY_SECRET, priority=0)
-
-    proxy, conn_class = build_proxy_config()
-
-    client_kwargs = {
-        "session": str(SESSION_PATH),
-        "api_id": API_ID,
-        "api_hash": API_HASH,
-        "auto_reconnect": True,
-        "connection_retries": 10,
-        "retry_delay": 5,
-    }
-    if proxy:
-        client_kwargs["proxy"] = proxy
-        if conn_class:
-            client_kwargs["connection"] = conn_class
-        log.info("Using %s proxy: %s:%d", PROXY_TYPE, PROXY_HOST, PROXY_PORT)
-    else:
-        log.info("Using direct connection (no proxy)")
-
-    client = TelegramClient(**client_kwargs)
+    # Proxy links remain inert text; the Listener always connects directly.
+    log.info("Proxy routing is disabled; any saved proxy link is reference-only.")
+    client = TelegramClient(
+        str(SESSION_PATH),
+        API_ID,
+        API_HASH,
+        auto_reconnect=True,
+        connection_retries=10,
+        retry_delay=5,
+    )
 
     allowed_chats = get_allowlisted_chats(conn)
     log.info("Allowlisted chats: %s", allowed_chats)
@@ -522,7 +418,6 @@ async def main():
 
     authorized = await client.is_user_authorized()
     connected = client.is_connected()
-    current_proxy_str = f"{PROXY_TYPE} {PROXY_HOST}:{PROXY_PORT}" if PROXY_HOST else "direct"
     last_event_at = None
     last_error = None
 
@@ -540,7 +435,7 @@ async def main():
         except Exception as e:
             log.warning("Initial catch-up failed for %s: %s", chat_id, e)
 
-    write_status(conn, authorized, connected, current_proxy_str, last_event_at, last_error)
+    write_status(conn, authorized, connected, last_event_at, last_error)
 
     # Periodic catch-up (every 5 minutes) for all allowlisted sources
     async def periodic_catchup():
@@ -553,7 +448,7 @@ async def main():
                 except Exception as e:
                     log.warning("Periodic catch-up failed for %s: %s", chat_id, e)
             last_event_at = datetime.now(timezone.utc).isoformat()
-            write_status(conn, authorized, connected, current_proxy_str, last_event_at, last_error)
+            write_status(conn, authorized, connected, last_event_at, last_error)
 
     asyncio.create_task(periodic_catchup())
 
@@ -569,80 +464,6 @@ async def main():
                 log.info("Sources updated: %s", allowed_chats)
 
     asyncio.create_task(sources_refresh_loop())
-
-    # Proxy health check + failover loop
-    async def proxy_health_loop():
-        nonlocal current_proxy_str, last_error
-        last_check = {}
-        backoff = {}
-        while True:
-            await asyncio.sleep(30)
-            proxies = get_active_proxies(conn)
-            if not proxies:
-                continue
-
-            for ptype, host, port, secret, priority in proxies:
-                key = (host, port)
-                now = time.monotonic()
-
-                # Skip in-use proxy if checked within last 5 min
-                if key == (PROXY_HOST, PROXY_PORT) and now - last_check.get(key, 0) < 300:
-                    continue
-
-                # Backoff for quarantined
-                if key in backoff and now - last_check.get(key, 0) < backoff[key]:
-                    continue
-
-                last_check[key] = now
-                ok, latency, err = await check_proxy_health(ptype, host, port, secret)
-                if ok:
-                    update_proxy_status(conn, ptype, host, port, "active", latency, 0)
-                    backoff.pop(key, None)
-                    log.info("Proxy %s %s:%d OK (%.1f ms)", ptype, host, port, latency)
-                else:
-                    cur = conn.execute(
-                        "SELECT fail_count FROM proxy_list WHERE type=? AND host=? AND port=?",
-                        (ptype, host, port),
-                    ).fetchone()
-                    fc = (cur[0] if cur else 0) + 1
-                    if fc >= 3:
-                        update_proxy_status(conn, ptype, host, port, "quarantined", latency, fc)
-                        backoff[key] = min(backoff.get(key, 60) * 2, 600)
-                        log.warning("Proxy %s %s:%d QUARANTINED after %d failures: %s", ptype, host, port, fc, err)
-                        # Failover: switch to next active proxy
-                        next_p = get_next_proxy(conn, host)
-                        if next_p:
-                            ntype, nhost, nport, nsecret = next_p
-                            try:
-                                if ntype == "mtproto":
-                                    nproxy = (nhost, nport, nsecret)
-                                    nconn = ConnectionTcpMTProxyRandomizedIntermediate
-                                elif ntype == "socks5":
-                                    nproxy = ("socks5", nhost, nport)
-                                    nconn = None
-                                elif ntype == "http":
-                                    nproxy = ("http", nhost, nport)
-                                    nconn = None
-                                else:
-                                    nproxy = None
-                                    nconn = None
-                                client.set_proxy(nproxy)
-                                if nconn:
-                                    client._connection = nconn
-                                await client.disconnect()
-                                await client.connect()
-                                current_proxy_str = f"{ntype} {nhost}:{nport}"
-                                log.info("Failover to proxy %s %s:%d", ntype, nhost, nport)
-                            except Exception as fe:
-                                log.error("Failover failed: %s", fe)
-                                last_error = str(fe)
-                    else:
-                        update_proxy_status(conn, ptype, host, port, "active", latency, fc)
-                        log.warning("Proxy %s %s:%d check failed (%d/3): %s", ptype, host, port, fc, err)
-
-            write_status(conn, authorized, connected, current_proxy_str, last_event_at, last_error)
-
-    asyncio.create_task(proxy_health_loop())
 
     # Keep running
     await client.run_until_disconnected()

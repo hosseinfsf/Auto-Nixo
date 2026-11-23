@@ -53,6 +53,7 @@ void main() {
   setUp(() {
     tmp = Directory.systemTemp.createTempSync('nixo_demo_');
     db = Database.open('${tmp.path}/demo.db');
+    db.setSetting('mt5_dry_run', '0');
     executor = FakeExecutor(
       quoteForSymbol: {
         'XAUUSD': Quote(symbol: 'XAUUSD', bid: 4049.5, ask: 4050.5, point: 0.01),

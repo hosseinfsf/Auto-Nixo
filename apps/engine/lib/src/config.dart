@@ -15,7 +15,7 @@ class EngineConfig {
     this.telegramApiId = 0,
     this.telegramApiHash = '',
     this.brokerTimeOffsetHours = 0,
-    this.validitySeconds = 300,
+    this.validitySeconds = 180,
   });
 
   final String dataDir;
@@ -47,7 +47,7 @@ class EngineConfig {
         telegramApiId: map['telegram_api_id'] as int? ?? 0,
         telegramApiHash: map['telegram_api_hash'] as String? ?? '',
         brokerTimeOffsetHours: map['broker_time_offset_hours'] as int? ?? 0,
-        validitySeconds: map['validity_seconds'] as int? ?? 300,
+        validitySeconds: map['validity_seconds'] as int? ?? 180,
       );
     } catch (_) {
       return EngineConfig();
