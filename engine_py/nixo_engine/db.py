@@ -7,7 +7,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 
 class NixoStore:
@@ -29,6 +29,9 @@ class NixoStore:
         try:
             conn.execute("BEGIN IMMEDIATE")
             yield conn
+            if current < 5:
+                conn.execute("CREATE INDEX idx_intents_signal ON execution_intents(signal_id)")
+                conn.execute("INSERT INTO schema_migrations(version) VALUES (5)")
             conn.commit()
         except Exception:
             conn.rollback()
@@ -287,6 +290,109 @@ class NixoStore:
                 (int(chat_id), int(message_id), int(edit_version)),
             ).fetchone()
             return row is not None
+
+    def save_channel_roulette_snapshot(self, chat_id: int, *, step: int,
+                                       activated: bool, baseline_equity: float) -> None:
+        """Persist activation/baseline without counting a completed trading batch."""
+        if step < 1 or baseline_equity < 0:
+            raise ValueError("invalid roulette state")
+        with self.transaction() as db:
+            cur = db.execute("""UPDATE channel_roulette_states SET step=?, activated=?,
+                baseline_equity=?, updated_at=CURRENT_TIMESTAMP WHERE chat_id=?""",
+                (step, int(activated), baseline_equity, int(chat_id)))
+            if cur.rowcount != 1:
+                raise KeyError(chat_id)
+
+    def get_signal_execution_context(self, signal_id: int) -> dict[str, Any]:
+        with self.connect() as db:
+            row = db.execute(
+                """SELECT s.*, c.label AS channel_label, c.enabled AS channel_enabled,
+                          c.roulette_enabled AS channel_roulette_enabled,
+                          c.roulette_model AS channel_roulette_model,
+                          c.roulette_config_json AS channel_roulette_config_json,
+                          a.enabled AS profile_enabled,
+                          p.parse_state, p.parsed_json,
+                          r.step AS roulette_step, r.activated AS roulette_activated,
+                          r.baseline_equity AS roulette_baseline_equity,
+                          r.completed_batches AS roulette_completed_batches,
+                          (SELECT MAX(e.edit_version) FROM channel_post_events e
+                           WHERE e.chat_id=s.source_chat_id
+                             AND e.message_id=s.source_message_id) AS latest_edit_version
+                   FROM signals s
+                   JOIN telegram_channels c ON c.chat_id=s.source_chat_id
+                   JOIN telegram_accounts a ON a.account_id=s.account_id
+                   JOIN signal_parse_results p ON p.signal_id=s.signal_id
+                   JOIN channel_roulette_states r ON r.chat_id=c.chat_id
+                   WHERE s.signal_id=?""", (int(signal_id),)
+            ).fetchone()
+            if row is None:
+                raise KeyError(signal_id)
+            return dict(row)
+
+    def create_dry_run_intent(self, *, signal_id: int, client_order_id: str,
+                              plan: dict[str, Any], now_utc: str,
+                              intent_state: str = "dry_run") -> str:
+        """Atomically revalidate source/version/TTL and persist one non-live intent."""
+        from datetime import datetime, timezone
+
+        if intent_state not in {"dry_run", "manual_review"}:
+            raise ValueError("intent_state must be dry_run or manual_review")
+        now = datetime.fromisoformat(now_utc.replace("Z", "+00:00"))
+        if now.tzinfo is None:
+            now = now.replace(tzinfo=timezone.utc)
+        with self.transaction() as db:
+            row = db.execute(
+                """SELECT s.*, c.enabled AS channel_enabled, a.enabled AS profile_enabled,
+                          p.parse_state,
+                          (SELECT MAX(e.edit_version) FROM channel_post_events e
+                           WHERE e.chat_id=s.source_chat_id
+                             AND e.message_id=s.source_message_id) AS latest_version
+                   FROM signals s
+                   JOIN telegram_channels c ON c.chat_id=s.source_chat_id
+                   JOIN telegram_accounts a ON a.account_id=s.account_id
+                   JOIN signal_parse_results p ON p.signal_id=s.signal_id
+                   WHERE s.signal_id=?""", (int(signal_id),)
+            ).fetchone()
+            if row is None:
+                raise KeyError(signal_id)
+            if row["status"] != "parsed" or row["parse_state"] != "parsed":
+                return "not_eligible"
+            if str(row["event_type"]).lower() != "new":
+                return "not_new_event"
+            if row["channel_enabled"] != 1 or row["profile_enabled"] != 1:
+                return "source_disabled"
+            if row["latest_version"] is None or int(row["latest_version"]) != int(row["edit_version"]):
+                return "superseded"
+            stamp = row["telegram_date_utc"] or row["received_at"]
+            try:
+                created = datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
+                if created.tzinfo is None:
+                    created = created.replace(tzinfo=timezone.utc)
+            except ValueError:
+                return "invalid_timestamp"
+            age = (now - created.astimezone(timezone.utc)).total_seconds()
+            if age < -60 or age > int(row["validity_seconds"]):
+                db.execute("UPDATE signals SET status='expired' WHERE signal_id=?",
+                           (int(signal_id),))
+                return "expired"
+            existing = db.execute(
+                "SELECT 1 FROM execution_intents WHERE signal_id=?", (int(signal_id),)
+            ).fetchone()
+            if existing:
+                return "duplicate"
+            cur = db.execute(
+                """INSERT OR IGNORE INTO execution_intents
+                   (account_id,signal_id,client_order_id,state,plan_json)
+                   VALUES(?,?,?,?,?)""",
+                (row["account_id"], int(signal_id), client_order_id, intent_state,
+                 json.dumps(plan, ensure_ascii=False, separators=(",", ":"), sort_keys=True)),
+            )
+            if cur.rowcount != 1:
+                return "duplicate"
+            status = "dry_run_planned" if intent_state == "dry_run" else "manual_review"
+            db.execute("UPDATE signals SET status=? WHERE signal_id=?",
+                       (status, int(signal_id)))
+            return "created"
 
     def record_signal(self, *, account_id: str, chat_id: int, message_id: int,
                       edit_version: int, event_type: str, telegram_date_utc: str | None,
