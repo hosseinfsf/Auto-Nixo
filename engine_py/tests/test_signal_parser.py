@@ -40,23 +40,24 @@ class SignalParserTests(unittest.TestCase):
             parse_signal("BUY XAUUSD EURUSD ENTRY 2300 SL 2290 TP1 2310")
         self.assertEqual(ctx.exception.code, "ambiguous_or_missing_symbol")
 
-    def test_rejects_missing_stop_or_target_or_entry(self):
+    def test_requires_stop_and_entry_but_not_provider_take_profit(self):
         cases = [
             "BUY XAUUSD ENTRY 2300 TP1 2310",
-            "BUY XAUUSD ENTRY 2300 SL 2290",
             "BUY XAUUSD SL 2290 TP1 2310",
         ]
         for message in cases:
             with self.subTest(message=message), self.assertRaises(SignalParseError):
                 parse_signal(message)
+        signal = parse_signal("BUY XAUUSD ENTRY 2300 SL 2290")
+        self.assertEqual(signal.take_profits, ())
 
     def test_rejects_stop_on_wrong_side(self):
         with self.assertRaisesRegex(SignalParseError, "BUY stop-loss"):
             parse_signal("BUY XAUUSD ENTRY 2300 SL 2310 TP1 2320")
 
-    def test_rejects_target_on_wrong_side(self):
-        with self.assertRaisesRegex(SignalParseError, "BUY take-profits"):
-            parse_signal("BUY XAUUSD ENTRY 2300 SL 2290 TP1 2295")
+    def test_provider_targets_are_preserved_for_audit(self):
+        signal = parse_signal("BUY XAUUSD ENTRY 2300 SL 2290 TP1 2295 TP2 2310")
+        self.assertEqual(signal.take_profits, (2295.0, 2310.0))
 
     def test_rejects_multiple_entry_zones_and_duplicate_targets(self):
         with self.assertRaises(SignalParseError):
