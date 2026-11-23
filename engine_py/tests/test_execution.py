@@ -326,7 +326,8 @@ class NixoLinkDryRunIntegrationTests(unittest.IsolatedAsyncioTestCase):
                             response = {"CMD": "SYMBOL_INFO", "REQ_ID": req_id,
                                          "SYMBOL": "XAUUSD", "BID": "2349.9", "ASK": "2350.1",
                                          "MARKET_OPEN": "1", "TICK_AGE": "1",
-                                         "VOL_MIN": "0.01", "VOL_MAX": "100", "VOL_STEP": "0.01"}
+                                         "VOL_MIN": "0.01", "VOL_MAX": "100", "VOL_STEP": "0.01",
+                                         "DIGITS": "2"}
                         elif request.command == "GET_RISK_PER_LOT":
                             response = {"CMD": "OK", "REQ_ID": req_id, "RISK_PER_LOT": "100"}
                         else:
