@@ -5,8 +5,11 @@ parse signals, create execution intents, or send commands to MetaTrader.
 """
 from __future__ import annotations
 
+import argparse
 import json
+import logging
 import sqlite3
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -179,3 +182,42 @@ class ListenerQueueConsumer:
         except Exception as exc:
             self._retry(row, exc, current)
             return {"queue_id": row["id"], "state": "retry", "error": str(exc)}
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="Persist Telegram Listener queue events into the Nixo raw inbox (no trading)."
+    )
+    parser.add_argument("--queue-db", required=True, help="Path to Listener data/listener_queue.db")
+    parser.add_argument("--engine-db", required=True, help="Path to the Nixo Engine SQLite database")
+    parser.add_argument("--poll-interval", type=float, default=0.5)
+    parser.add_argument("--once", action="store_true", help="Process at most one queue row and exit")
+    args = parser.parse_args()
+    if args.poll_interval <= 0:
+        parser.error("--poll-interval must be positive")
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    )
+    store = NixoStore(args.engine_db)
+    consumer = ListenerQueueConsumer(args.queue_db, store)
+    logging.info("Listener queue consumer started in raw-inbox-only mode")
+    try:
+        while True:
+            outcome = consumer.process_one()
+            if outcome is None:
+                if args.once:
+                    return 0
+                time.sleep(args.poll_interval)
+                continue
+            logging.info("Listener queue outcome: %s", outcome)
+            if args.once:
+                return 0
+    except KeyboardInterrupt:
+        logging.info("Listener queue consumer stopped")
+        return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
