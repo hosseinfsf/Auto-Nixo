@@ -140,6 +140,28 @@ class NixoStore:
             if current < 5:
                 conn.execute("CREATE INDEX idx_intents_signal ON execution_intents(signal_id)")
                 conn.execute("INSERT INTO schema_migrations(version) VALUES (5)")
+                current = 5
+            if current < 6:
+                conn.execute("""CREATE TABLE mt5_trade_events (
+                    event_key TEXT PRIMARY KEY, login INTEGER NOT NULL, command TEXT NOT NULL,
+                    payload_json TEXT NOT NULL, received_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )""")
+                conn.execute("""CREATE TABLE mt5_position_closures (
+                    login INTEGER NOT NULL, position_id INTEGER NOT NULL,
+                    intent_id INTEGER NOT NULL REFERENCES execution_intents(intent_id),
+                    net_profit REAL NOT NULL, event_key TEXT NOT NULL REFERENCES mt5_trade_events(event_key),
+                    closed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY(login, position_id)
+                )""")
+                conn.execute("""CREATE TABLE signal_batch_results (
+                    signal_id INTEGER PRIMARY KEY REFERENCES signals(signal_id),
+                    chat_id INTEGER NOT NULL REFERENCES telegram_channels(chat_id),
+                    net_profit REAL NOT NULL, risk_money REAL NOT NULL, outcome TEXT NOT NULL,
+                    roulette_action TEXT NOT NULL, applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )""")
+                conn.execute("CREATE INDEX idx_trade_events_login ON mt5_trade_events(login, received_at)")
+                conn.execute("CREATE INDEX idx_position_closures_intent ON mt5_position_closures(intent_id)")
+                conn.execute("INSERT INTO schema_migrations(version) VALUES (6)")
+                current = 6
             conn.commit()
         except Exception:
             conn.rollback()
@@ -442,3 +464,131 @@ class NixoStore:
                 (step, int(activated), baseline_equity, action, account_id))
             if cur.rowcount != 1:
                 raise KeyError(account_id)
+
+
+    def ingest_mt5_trade_event(self, *, login: int, command: str,
+                               payload: dict[str, Any]) -> dict[str, Any]:
+        """Persist MT5 deal events idempotently and apply roulette only at full batch close."""
+        import math
+        from dataclasses import fields
+        from .roulette import Roulette, RouletteConfig, RouletteState
+
+        cmd = str(command).upper()
+        if cmd not in {"FILL", "POSITION_CLOSED"}:
+            raise ValueError("unsupported trade event")
+        deal_ticket = int(payload.get("DEAL_TICKET", 0) or 0)
+        position_id = int(payload.get("POSITION_ID", 0) or 0)
+        if int(login) <= 0 or deal_ticket <= 0 or position_id <= 0:
+            raise ValueError("LOGIN, DEAL_TICKET and POSITION_ID are required")
+        net_profit = 0.0
+        if cmd == "POSITION_CLOSED":
+            net_profit = float(payload.get("NET_PROFIT", "nan"))
+            if not math.isfinite(net_profit):
+                raise ValueError("NET_PROFIT must be finite")
+        event_key = f"{int(login)}:{cmd}:{deal_ticket}"
+
+        with self.transaction() as db:
+            inserted = db.execute(
+                """INSERT OR IGNORE INTO mt5_trade_events
+                   (event_key,login,command,payload_json) VALUES(?,?,?,?)""",
+                (event_key, int(login), cmd,
+                 json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True)),
+            ).rowcount == 1
+            if not inserted:
+                return {"state": "duplicate", "event_key": event_key}
+            if cmd == "FILL":
+                return {"state": "recorded", "event_key": event_key}
+
+            broker_comment = str(payload.get("CLIENT_ORDER_ID", "")).strip()
+            if not broker_comment:
+                return {"state": "unmatched", "event_key": event_key,
+                        "reason": "missing_client_order_id"}
+            candidates = db.execute("SELECT intent_id,plan_json FROM execution_intents ORDER BY intent_id").fetchall()
+            matched = matched_plan = None
+            for candidate in candidates:
+                try:
+                    plan = json.loads(candidate["plan_json"])
+                except (TypeError, json.JSONDecodeError):
+                    continue
+                if int(plan.get("mt5_login", 0) or 0) != int(login):
+                    continue
+                comments = {str(o.get("broker_comment", "")) for o in plan.get("orders", [])
+                            if isinstance(o, dict)}
+                if broker_comment in comments:
+                    matched, matched_plan = candidate, plan
+                    break
+            if matched is None:
+                return {"state": "unmatched", "event_key": event_key,
+                        "reason": "no_intent_matches_broker_comment"}
+
+            inserted_close = db.execute(
+                """INSERT OR IGNORE INTO mt5_position_closures
+                   (login,position_id,intent_id,net_profit,event_key) VALUES(?,?,?,?,?)""",
+                (int(login), position_id, int(matched["intent_id"]), net_profit, event_key),
+            ).rowcount
+            if not inserted_close:
+                return {"state": "duplicate_position_close", "event_key": event_key}
+            expected = max(1, int(matched_plan.get(
+                "expected_positions", len(matched_plan.get("orders", [])) or 1)))
+            closed = int(db.execute(
+                "SELECT COUNT(*) FROM mt5_position_closures WHERE intent_id=?",
+                (int(matched["intent_id"]),),
+            ).fetchone()[0])
+            if closed < expected:
+                return {"state": "position_closed_batch_pending",
+                        "closed_positions": closed, "expected_positions": expected}
+
+            intent = db.execute(
+                """SELECT i.signal_id,s.source_chat_id FROM execution_intents i
+                   JOIN signals s ON s.signal_id=i.signal_id WHERE i.intent_id=?""",
+                (int(matched["intent_id"]),),
+            ).fetchone()
+            if intent is None or intent["signal_id"] is None:
+                return {"state": "unmatched", "event_key": event_key, "reason": "intent_has_no_signal"}
+            signal_id, chat_id = int(intent["signal_id"]), int(intent["source_chat_id"])
+            if db.execute("SELECT 1 FROM signal_batch_results WHERE signal_id=?", (signal_id,)).fetchone():
+                return {"state": "batch_already_reconciled", "event_key": event_key}
+            total_profit = float(db.execute(
+                "SELECT COALESCE(SUM(net_profit),0) FROM mt5_position_closures WHERE intent_id=?",
+                (int(matched["intent_id"]),),
+            ).fetchone()[0])
+            risk_money = float(matched_plan.get("planned_risk", matched_plan.get("risk_budget", 0)) or 0)
+            if not math.isfinite(risk_money) or risk_money < 0:
+                raise ValueError("stored risk budget is invalid")
+            outcome = "win" if total_profit > 0 else "loss" if total_profit < 0 else "flat"
+            channel = db.execute(
+                """SELECT c.roulette_enabled,c.roulette_model,c.roulette_config_json,
+                          r.step,r.activated,r.baseline_equity,r.completed_batches
+                   FROM telegram_channels c JOIN channel_roulette_states r ON r.chat_id=c.chat_id
+                   WHERE c.chat_id=?""", (chat_id,),
+            ).fetchone()
+            action = "not_activated"
+            if channel is not None:
+                cfg_data = json.loads(channel["roulette_config_json"] or "{}")
+                cfg_data["enabled"] = bool(channel["roulette_enabled"]) and bool(cfg_data.get("enabled", True))
+                cfg_data["model"] = str(channel["roulette_model"])
+                allowed = {x.name for x in fields(RouletteConfig)}
+                cfg = RouletteConfig(**{k: v for k, v in cfg_data.items() if k in allowed})
+                state = RouletteState(
+                    channel_id=str(chat_id), step=int(channel["step"]),
+                    activated=bool(channel["activated"]),
+                    baseline_equity=float(channel["baseline_equity"]),
+                    completed_batches=int(channel["completed_batches"]),
+                )
+                action = Roulette(cfg, state).on_batch_result(total_profit, risk_money)
+                if action != "not_activated":
+                    db.execute(
+                        """UPDATE channel_roulette_states SET step=?,completed_batches=completed_batches+1,
+                           last_action=?,updated_at=CURRENT_TIMESTAMP WHERE chat_id=?""",
+                        (state.step, action, chat_id),
+                    )
+            db.execute(
+                """INSERT INTO signal_batch_results
+                   (signal_id,chat_id,net_profit,risk_money,outcome,roulette_action) VALUES(?,?,?,?,?,?)""",
+                (signal_id, chat_id, total_profit, risk_money, outcome, action),
+            )
+            db.execute("UPDATE execution_intents SET state='closed',updated_at=CURRENT_TIMESTAMP WHERE intent_id=?",
+                       (int(matched["intent_id"]),))
+            return {"state": "batch_reconciled", "signal_id": signal_id, "chat_id": chat_id,
+                    "net_profit": total_profit, "risk_money": risk_money, "outcome": outcome,
+                    "roulette_action": action, "event_key": event_key}
