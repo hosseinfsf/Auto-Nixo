@@ -1370,6 +1370,7 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
          {
             double openedVolume = 0.0, closedVolume = 0.0, netTotal = 0.0;
             string openingComment = "";
+            bool ambiguousOpening = false, hasInOut = false;
             int deals = HistoryDealsTotal();
             for(int k = 0; k < deals; k++)
             {
@@ -1381,19 +1382,24 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
                {
                   openedVolume += vol;
                   string dc = HistoryDealGetString(deal, DEAL_COMMENT);
-                  if(openingComment == "" && StringFind(dc, "NX") == 0)
+                  if(StringFind(dc, "NX") == 0)
                   {
                      int hashAt = StringFind(dc, "#");
-                     openingComment = hashAt >= 0 ? StringSubstr(dc, 0, hashAt) : dc;
+                     string normalized = hashAt >= 0 ? StringSubstr(dc, 0, hashAt) : dc;
+                     if(openingComment == "") openingComment = normalized;
+                     else if(openingComment != normalized) ambiguousOpening = true;
                   }
                }
                else if(de == DEAL_ENTRY_OUT || de == DEAL_ENTRY_OUT_BY)
                   closedVolume += vol;
+               else if(de == DEAL_ENTRY_INOUT)
+                  hasInOut = true;
                netTotal += HistoryDealGetDouble(deal, DEAL_PROFIT) +
                            HistoryDealGetDouble(deal, DEAL_SWAP) +
                            HistoryDealGetDouble(deal, DEAL_COMMISSION);
             }
-            if(openedVolume > 0.0 && closedVolume + 1e-8 >= openedVolume && openingComment != "")
+            if(!hasInOut && !ambiguousOpening && openedVolume > 0.0 &&
+               closedVolume + 1e-8 >= openedVolume && openingComment != "")
             {
                CLine c;
                c.Add("CMD", "POSITION_CLOSED");
