@@ -252,11 +252,15 @@ class DryRunExecutionPlanner:
                 raise ExecutionReview("rounded_volume_exceeds_risk_budget")
 
             client_id = self._client_order_id(context)
+            digest = client_id.removeprefix("NX-TG-")
             orders = [{
                 "client_order_id": f"{client_id}-{index + 1:02d}",
+                "broker_comment": f"NX{digest[:18]}-{index + 1:02d}",
                 "symbol": symbol, "side": side, "order_type": order_type,
                 "lots": lots_each, "entry": entry, "sl": sl, "tps": tps,
             } for index in range(order_count)]
+            margin_mode = str(account.get("MARGIN_MODE", "hedging")).lower()
+            expected_positions = 1 if margin_mode == "netting" else order_count
             plan = {
                 "dry_run": True, "execution_enabled": False,
                 "account_id": context["account_id"], "mt5_login": login,
@@ -272,7 +276,8 @@ class DryRunExecutionPlanner:
                 "planned_risk": planned_risk, "roulette_step": roulette.state.step,
                 "roulette_activated": roulette.state.activated,
                 "roulette_model": roulette.config.model,
-                "order_count": order_count, "lots_each": lots_each,
+                "order_count": order_count, "expected_positions": expected_positions,
+                "margin_mode": margin_mode, "lots_each": lots_each,
                 "aggregate_lots": lots_each * order_count,
                 "volume_limits": info_limits, "orders": orders,
             }
@@ -330,8 +335,20 @@ async def _run(args) -> int:
     token = str(config.get("api_token", ""))
     host = str(config.get("host", "127.0.0.1"))
     port = int(config.get("port", 9123))
-    server = NixoLinkServer(host, port, token, dry_run=True)
     store = NixoStore(db_path)
+
+    def on_mt5_event(command: str, payload: dict[str, str]) -> None:
+        if command not in {"FILL", "POSITION_CLOSED"}:
+            return
+        try:
+            result = store.ingest_mt5_trade_event(
+                login=int(payload.get("LOGIN", "0") or 0), command=command, payload=payload,
+            )
+            logging.info("MT5 %s reconciliation event: %s", command, result)
+        except (TypeError, ValueError) as exc:
+            logging.warning("Rejected malformed MT5 %s event: %s", command, exc)
+
+    server = NixoLinkServer(host, port, token, dry_run=True, on_event=on_mt5_event)
     planner = DryRunExecutionPlanner(
         store, server, login_by_profile=config.get("profile_login_map", {}),
     )

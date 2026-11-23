@@ -103,6 +103,8 @@ class NixoLinkServer:
                     continue
                 c.last_seen = time.monotonic()
                 cmd, fields = msg.command, dict(msg.fields)
+                if c.login is not None:
+                    fields.setdefault("LOGIN", str(c.login))
                 if cmd == "HB":
                     await self._send(c, Mt5Message({"CMD": "HB"}))
                     continue

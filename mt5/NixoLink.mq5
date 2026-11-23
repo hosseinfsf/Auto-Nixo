@@ -1144,47 +1144,96 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
          return;                                   // balance/credit etc.
       ulong  magic   = (ulong)HistoryDealGetInteger(trans.deal, DEAL_MAGIC);
       string comment = HistoryDealGetString(trans.deal, DEAL_COMMENT);
-      if(magic == 0 && StringFind(comment, "NX") != 0)
-         return;                                   // manual trades are not ours
+      long posId = HistoryDealGetInteger(trans.deal, DEAL_POSITION_ID);
+      bool nixoTagged = (StringFind(comment, "NX") == 0);
+      if(!nixoTagged && HistorySelectByPosition((ulong)posId))
+      {
+         for(int tagIndex = 0; tagIndex < HistoryDealsTotal(); tagIndex++)
+         {
+            ulong tagDeal = HistoryDealGetTicket(tagIndex);
+            if(tagDeal == 0) continue;
+            if(HistoryDealGetInteger(tagDeal, DEAL_ENTRY) == DEAL_ENTRY_IN &&
+               StringFind(HistoryDealGetString(tagDeal, DEAL_COMMENT), "NX") == 0)
+            {
+               nixoTagged = true;
+               break;
+            }
+         }
+      }
+      if(!nixoTagged)
+         return;                                   // ignore unrelated/manual positions
 
       string symbol = HistoryDealGetString(trans.deal, DEAL_SYMBOL);
       int digits = (int)SymbolInfoInteger(symbol, SYMBOL_DIGITS);
       long entryType = HistoryDealGetInteger(trans.deal, DEAL_ENTRY);
-      double profit = HistoryDealGetDouble(trans.deal, DEAL_PROFIT);
-      double swap   = HistoryDealGetDouble(trans.deal, DEAL_SWAP);
-      double comm   = HistoryDealGetDouble(trans.deal, DEAL_COMMISSION);
-      long   posId  = HistoryDealGetInteger(trans.deal, DEAL_POSITION_ID);
-      bool   closing = (entryType == DEAL_ENTRY_OUT || entryType == DEAL_ENTRY_OUT_BY ||
-                        entryType == DEAL_ENTRY_INOUT);
+      string brokerComment = comment;
+      int suffix = StringFind(brokerComment, "#");
+      if(suffix >= 0) brokerComment = StringSubstr(brokerComment, 0, suffix);
 
       CLine f;
       f.Add("CMD", "FILL");
-      f.AddI("TICKET", posId);
+      f.AddI("DEAL_TICKET", (long)trans.deal);
+      f.AddI("POSITION_ID", posId);
       f.AddI("ORDER", HistoryDealGetInteger(trans.deal, DEAL_ORDER));
       f.Add("SYMBOL", symbol);
       f.Add("TYPE", dtype == DEAL_TYPE_BUY ? "buy" : "sell");
-      f.Add("ENTRY", closing ? "out" : "in");
+      f.Add("ENTRY", entryType == DEAL_ENTRY_IN ? "in" :
+                     (entryType == DEAL_ENTRY_OUT || entryType == DEAL_ENTRY_OUT_BY) ? "out" : "inout");
       f.AddD("VOLUME", HistoryDealGetDouble(trans.deal, DEAL_VOLUME), 2);
       f.AddD("PRICE", HistoryDealGetDouble(trans.deal, DEAL_PRICE), digits);
-      f.AddD("PROFIT", profit, 2);
-      f.AddD("SWAP", swap, 2);
-      f.AddD("COMMISSION", comm, 2);
+      f.AddD("PROFIT", HistoryDealGetDouble(trans.deal, DEAL_PROFIT), 2);
+      f.AddD("SWAP", HistoryDealGetDouble(trans.deal, DEAL_SWAP), 2);
+      f.AddD("COMMISSION", HistoryDealGetDouble(trans.deal, DEAL_COMMISSION), 2);
       f.AddI("MAGIC", (long)magic);
       f.Add("COMMENT", comment);
+      f.Add("CLIENT_ORDER_ID", brokerComment);
       f.AddI("TIME", HistoryDealGetInteger(trans.deal, DEAL_TIME));
       SendLine(f.s);
 
-      if(closing)
+      // Partial exits are not final. Rebuild volume and net P/L from MT5 deal history.
+      if(entryType == DEAL_ENTRY_OUT || entryType == DEAL_ENTRY_OUT_BY)
       {
-         CLine c;
-         c.Add("CMD", "POSITION_CLOSED");
-         c.AddI("TICKET", posId);
-         c.Add("SYMBOL", symbol);
-         c.AddD("PROFIT", profit + swap + comm, 2);
-         c.AddI("MAGIC", (long)magic);
-         c.Add("COMMENT", comment);
-         c.AddI("TIME", HistoryDealGetInteger(trans.deal, DEAL_TIME));
-         SendLine(c.s);
+         if(HistorySelectByPosition((ulong)posId))
+         {
+            double openedVolume = 0.0, closedVolume = 0.0, netTotal = 0.0;
+            string openingComment = "";
+            int deals = HistoryDealsTotal();
+            for(int k = 0; k < deals; k++)
+            {
+               ulong deal = HistoryDealGetTicket(k);
+               if(deal == 0) continue;
+               long de = HistoryDealGetInteger(deal, DEAL_ENTRY);
+               double vol = HistoryDealGetDouble(deal, DEAL_VOLUME);
+               if(de == DEAL_ENTRY_IN)
+               {
+                  openedVolume += vol;
+                  string dc = HistoryDealGetString(deal, DEAL_COMMENT);
+                  if(openingComment == "" && StringFind(dc, "NX") == 0)
+                  {
+                     int hashAt = StringFind(dc, "#");
+                     openingComment = hashAt >= 0 ? StringSubstr(dc, 0, hashAt) : dc;
+                  }
+               }
+               else if(de == DEAL_ENTRY_OUT || de == DEAL_ENTRY_OUT_BY)
+                  closedVolume += vol;
+               netTotal += HistoryDealGetDouble(deal, DEAL_PROFIT) +
+                           HistoryDealGetDouble(deal, DEAL_SWAP) +
+                           HistoryDealGetDouble(deal, DEAL_COMMISSION);
+            }
+            if(openedVolume > 0.0 && closedVolume + 1e-8 >= openedVolume && openingComment != "")
+            {
+               CLine c;
+               c.Add("CMD", "POSITION_CLOSED");
+               c.AddI("DEAL_TICKET", (long)trans.deal);
+               c.AddI("POSITION_ID", posId);
+               c.Add("SYMBOL", symbol);
+               c.AddD("NET_PROFIT", netTotal, 2);
+               c.AddI("MAGIC", (long)magic);
+               c.Add("CLIENT_ORDER_ID", openingComment);
+               c.AddI("TIME", HistoryDealGetInteger(trans.deal, DEAL_TIME));
+               SendLine(c.s);
+            }
+         }
       }
    }
    else if(trans.type == TRADE_TRANSACTION_ORDER_DELETE)
