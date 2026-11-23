@@ -1,0 +1,25 @@
+{
+  "host": "127.0.0.1",
+  "port": 9123,
+  "api_token": "",
+  "database_path": "data/nixo_engine.sqlite3",
+  "listener_queue_db_path": "../listener/data/listener_queue.db",
+  "dry_run": true,
+  "allow_real": false,
+  "telegram_accounts": [
+    {
+      "account_id": "telegram-default",
+      "label": "Primary Telegram User Account",
+      "enabled": true,
+      "roulette": {
+        "enabled": true,
+        "model": "volume",
+        "base_risk_pct": 0.5,
+        "activation_trigger_pct": 3.0,
+        "max_risk_pct": 5.0,
+        "max_steps": 50,
+        "volume_step_factor": 2.0
+      }
+    }
+  ]
+}
