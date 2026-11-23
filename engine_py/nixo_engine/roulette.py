@@ -1,4 +1,4 @@
-"""Account-isolated volume roulette, ported from the documented legacy rules."""
+"""Account-isolated volume/order roulette, ported from documented legacy rules."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -13,6 +13,8 @@ class RouletteConfig:
     max_risk_pct: float = 5.0
     max_steps: int = 50
     volume_step_factor: float = 2.0
+    initial_order_count: int = 1
+    max_order_count: int = 8
 
     def validate(self) -> None:
         if self.model not in {"volume", "order", "combined", "off"}:
@@ -23,6 +25,8 @@ class RouletteConfig:
             raise ValueError("trigger and max_steps are invalid")
         if self.volume_step_factor < 1:
             raise ValueError("volume_step_factor must be >= 1")
+        if self.initial_order_count < 1 or self.max_order_count < self.initial_order_count:
+            raise ValueError("order count limits are invalid")
 
 
 @dataclass
@@ -39,8 +43,8 @@ class Roulette:
 
     def __init__(self, config: RouletteConfig, state: RouletteState):
         config.validate()
-        if state.step < 1:
-            raise ValueError("roulette step must be >= 1")
+        if state.step < 1 or state.step > config.max_steps:
+            raise ValueError("roulette step is outside configured limits")
         self.config = config
         self.state = state
 
@@ -65,6 +69,13 @@ class Roulette:
             return self.config.base_risk_pct
         raw = self.config.base_risk_pct * (self.config.volume_step_factor ** (self.state.step - 1))
         return min(raw, self.config.max_risk_pct)
+
+    def order_count(self) -> int:
+        if not self.config.enabled or self.config.model not in {"order", "combined"}:
+            return self.config.initial_order_count
+        if not self.state.activated:
+            return self.config.initial_order_count
+        return min(self.state.step, self.config.max_order_count)
 
     def on_batch_result(self, net_profit: float, risk_money: float) -> str:
         if not self.config.enabled or self.config.model == "off" or not self.state.activated:

@@ -33,9 +33,26 @@ class RouletteTests(unittest.TestCase):
         b = Roulette(RouletteConfig(activation_trigger_pct=0), RouletteState("B"))
         a.check_activation(1000)
         b.check_activation(1000)
-        a.on_batch_result(10, 100)
+        a.on_batch_result(20, 100)
         self.assertEqual(a.state.step, 2)
         self.assertEqual(b.state.step, 1)
+
+    def test_order_roulette_is_independent_and_capped(self):
+        cfg = RouletteConfig(model="order", activation_trigger_pct=0, max_order_count=4)
+        r = Roulette(cfg, RouletteState("tg-order"))
+        r.check_activation(1000)
+        self.assertEqual(r.order_count(), 1)
+        for _ in range(8):
+            r.on_batch_result(20, 100)
+        self.assertEqual(r.order_count(), 4)
+
+    def test_volume_risk_is_capped(self):
+        r = Roulette(RouletteConfig(activation_trigger_pct=0, max_risk_pct=2.0),
+                     RouletteState("tg-cap"))
+        r.check_activation(1000)
+        for _ in range(8):
+            r.on_batch_result(20, 100)
+        self.assertEqual(r.current_risk_pct(), 2.0)
 
 
 if __name__ == "__main__":
