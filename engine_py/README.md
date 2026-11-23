@@ -175,9 +175,10 @@ command is required.
 Python's durable event key (`login:command:deal_ticket`) makes overlapping
 replays idempotent, including after an Engine restart. A failed replay is
 retried with a 5-second backoff; the next reconnect replays the same window.
-Positions with reversal (`DEAL_ENTRY_INOUT`) or multiple distinct Nixo entry
-comments are deliberately not assigned to an intent automatically and remain
-for manual reconciliation. History older than the configured window with no
+Positions with reversal (`DEAL_ENTRY_INOUT`) or multiple different Nixo batch
+IDs are deliberately not assigned to an intent automatically and remain for
+manual reconciliation. Multiple order comments from the same batch are
+recognized as one batch, which supports the expected same-signal netting case. History older than the configured window with no
 deal activity inside that window is outside this recovery pass.
 
 This is a history-recovery path only. It does not enable live order submission;
