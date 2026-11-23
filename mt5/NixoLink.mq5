@@ -33,6 +33,8 @@ input bool   InpAllowReal     = false;    // explicit opt-in required for REAL a
 input bool   InpCloseAllAll   = false;     // CLOSE_ALL scope: false = only NX-tagged trades
 input double InpMarginUsePct  = 80.0;      // max share of free margin one order may use
 input int    InpMaxTickAgeSec = 180;       // quote older than this => market treated as closed
+input int    InpHistorySyncDays = 3;        // replay this many days after reconnect (1..30)
+input int    InpHistorySyncIntervalMin = 30; // periodic catch-up; 0 = reconnect only
 
 //--- state
 CTrade g_trade;
@@ -44,6 +46,8 @@ ulong  g_lastRx      = 0;
 ulong  g_lastHb      = 0;
 ulong  g_connectedAt = 0;
 ulong  g_lastErrLog  = 0;
+bool   g_historySyncPending = false;
+ulong  g_lastHistorySync = 0;
 
 //+------------------------------------------------------------------+
 //| Percent-encoding (must match engine protocol.dart)                |
@@ -1095,6 +1099,7 @@ void HandleLine(string line)
       g_authed = true;
       Print("NixoLink: authenticated with engine");
       SendAccountSnapshot();
+      g_historySyncPending = true;
       return;
    }
    if(cmd == "AUTH_FAIL")
@@ -1123,6 +1128,176 @@ void HandleLine(string line)
    else if(cmd == "GET_CALENDAR")     SendCalendar(req);
    else if(cmd == "GET_RISK_PER_LOT") HandleRiskPerLot(m, req);
    else if(req != "")                 SendErr(req, "unknown_command");
+}
+
+//+------------------------------------------------------------------+
+//| MT5 history recovery                                              |
+//+------------------------------------------------------------------+
+// Overlap-based replay is restart-safe because Python deduplicates
+// every (login, command, deal_ticket) event in its durable database.
+bool SendHistoryFill(const ulong ticket, const long posId)
+{
+   long dtype = HistoryDealGetInteger(ticket, DEAL_TYPE);
+   if(dtype != DEAL_TYPE_BUY && dtype != DEAL_TYPE_SELL) return(true);
+   string symbol = HistoryDealGetString(ticket, DEAL_SYMBOL);
+   int digits = (int)SymbolInfoInteger(symbol, SYMBOL_DIGITS);
+   long entryType = HistoryDealGetInteger(ticket, DEAL_ENTRY);
+   string comment = HistoryDealGetString(ticket, DEAL_COMMENT);
+   string brokerComment = comment;
+   int suffix = StringFind(brokerComment, "#");
+   if(suffix >= 0) brokerComment = StringSubstr(brokerComment, 0, suffix);
+   CLine f;
+   f.Add("CMD", "FILL");
+   f.AddI("DEAL_TICKET", (long)ticket);
+   f.AddI("POSITION_ID", posId);
+   f.AddI("ORDER", HistoryDealGetInteger(ticket, DEAL_ORDER));
+   f.Add("SYMBOL", symbol);
+   f.Add("TYPE", dtype == DEAL_TYPE_BUY ? "buy" : "sell");
+   f.Add("ENTRY", entryType == DEAL_ENTRY_IN ? "in" :
+                  (entryType == DEAL_ENTRY_OUT || entryType == DEAL_ENTRY_OUT_BY) ? "out" : "inout");
+   f.AddD("VOLUME", HistoryDealGetDouble(ticket, DEAL_VOLUME), 2);
+   f.AddD("PRICE", HistoryDealGetDouble(ticket, DEAL_PRICE), digits);
+   f.AddD("PROFIT", HistoryDealGetDouble(ticket, DEAL_PROFIT), 2);
+   f.AddD("SWAP", HistoryDealGetDouble(ticket, DEAL_SWAP), 2);
+   f.AddD("COMMISSION", HistoryDealGetDouble(ticket, DEAL_COMMISSION), 2);
+   f.AddI("MAGIC", HistoryDealGetInteger(ticket, DEAL_MAGIC));
+   f.Add("COMMENT", comment);
+   f.Add("CLIENT_ORDER_ID", brokerComment);
+   f.AddI("TIME", HistoryDealGetInteger(ticket, DEAL_TIME));
+   return(SendRaw(f.s + "\n"));
+}
+
+bool ReplayTradeHistory()
+{
+   if(!g_authed || g_socket == INVALID_HANDLE) return(false);
+   int days = MathMax(1, MathMin(30, InpHistorySyncDays));
+   datetime toTime = TimeTradeServer();
+   if(toTime <= 0) toTime = TimeCurrent();
+   if(!HistorySelect(toTime - (datetime)(days * 86400), toTime))
+   {
+      Print("NixoLink: history recovery could not select MT5 history; will retry");
+      return(false);
+   }
+
+   // Copy identifiers first: HistorySelectByPosition changes the active selection.
+   ulong tickets[];
+   long positions[];
+   int total = HistoryDealsTotal();
+   for(int i = 0; i < total; i++)
+   {
+      ulong ticket = HistoryDealGetTicket(i);
+      if(ticket == 0) continue;
+      long dtype = HistoryDealGetInteger(ticket, DEAL_TYPE);
+      long posId = HistoryDealGetInteger(ticket, DEAL_POSITION_ID);
+      if((dtype != DEAL_TYPE_BUY && dtype != DEAL_TYPE_SELL) || posId <= 0) continue;
+      int n = ArraySize(tickets);
+      ArrayResize(tickets, n + 1);
+      tickets[n] = ticket;
+      bool known = false;
+      for(int p = 0; p < ArraySize(positions); p++)
+         if(positions[p] == posId) { known = true; break; }
+      if(!known)
+      {
+         int pn = ArraySize(positions);
+         ArrayResize(positions, pn + 1);
+         positions[pn] = posId;
+      }
+   }
+
+   int replayed = 0;
+   for(int p = 0; p < ArraySize(positions); p++)
+   {
+      long posId = positions[p];
+      bool tagged = false;
+      for(int j = 0; j < ArraySize(tickets); j++)
+      {
+         ulong ticket = tickets[j];
+         if(HistoryDealGetInteger(ticket, DEAL_POSITION_ID) != posId) continue;
+         if(HistoryDealGetInteger(ticket, DEAL_ENTRY) == DEAL_ENTRY_IN &&
+            StringFind(HistoryDealGetString(ticket, DEAL_COMMENT), "NX") == 0)
+         { tagged = true; break; }
+      }
+      if(!tagged) continue;
+      for(int j = 0; j < ArraySize(tickets); j++)
+      {
+         ulong ticket = tickets[j];
+         if(HistoryDealGetInteger(ticket, DEAL_POSITION_ID) != posId) continue;
+         if(!SendHistoryFill(ticket, posId))
+         {
+            Print("NixoLink: history replay interrupted during FILL; reconnect will retry");
+            return(false);
+         }
+         replayed++;
+      }
+   }
+
+   int closedCount = 0;
+   for(int p = 0; p < ArraySize(positions); p++)
+   {
+      long posId = positions[p];
+      if(!HistorySelectByPosition((ulong)posId)) continue;
+      double openedVolume = 0.0, closedVolume = 0.0, netTotal = 0.0;
+      string openingComment = "";
+      bool ambiguousOpening = false, hasInOut = false;
+      ulong lastCloseTicket = 0;
+      long lastCloseTime = 0;
+      int deals = HistoryDealsTotal();
+      for(int k = 0; k < deals; k++)
+      {
+         ulong deal = HistoryDealGetTicket(k);
+         if(deal == 0) continue;
+         long de = HistoryDealGetInteger(deal, DEAL_ENTRY);
+         double vol = HistoryDealGetDouble(deal, DEAL_VOLUME);
+         string dc = HistoryDealGetString(deal, DEAL_COMMENT);
+         if(de == DEAL_ENTRY_IN)
+         {
+            openedVolume += vol;
+            if(StringFind(dc, "NX") == 0)
+            {
+               int hashAt = StringFind(dc, "#");
+               string normalized = hashAt >= 0 ? StringSubstr(dc, 0, hashAt) : dc;
+               if(openingComment == "") openingComment = normalized;
+               else if(openingComment != normalized) ambiguousOpening = true;
+            }
+         }
+         else if(de == DEAL_ENTRY_OUT || de == DEAL_ENTRY_OUT_BY)
+         {
+            closedVolume += vol;
+            long dealTime = HistoryDealGetInteger(deal, DEAL_TIME);
+            if(dealTime >= lastCloseTime)
+            { lastCloseTime = dealTime; lastCloseTicket = deal; }
+         }
+         else if(de == DEAL_ENTRY_INOUT)
+            hasInOut = true; // reversal accounting remains manual-review only
+         netTotal += HistoryDealGetDouble(deal, DEAL_PROFIT) +
+                     HistoryDealGetDouble(deal, DEAL_SWAP) +
+                     HistoryDealGetDouble(deal, DEAL_COMMISSION);
+      }
+      // Never guess which intent owns a netting position with multiple entry comments.
+      if(hasInOut || ambiguousOpening || openingComment == "" ||
+         openedVolume <= 0.0 || closedVolume + 1e-8 < openedVolume || lastCloseTicket == 0)
+         continue;
+      string symbol = HistoryDealGetString(lastCloseTicket, DEAL_SYMBOL);
+      CLine c;
+      c.Add("CMD", "POSITION_CLOSED");
+      c.AddI("DEAL_TICKET", (long)lastCloseTicket);
+      c.AddI("POSITION_ID", posId);
+      c.Add("SYMBOL", symbol);
+      c.AddD("NET_PROFIT", netTotal, 2);
+      c.AddI("MAGIC", HistoryDealGetInteger(lastCloseTicket, DEAL_MAGIC));
+      c.Add("CLIENT_ORDER_ID", openingComment);
+      c.AddI("TIME", lastCloseTime);
+      if(!SendRaw(c.s + "\n"))
+      {
+         Print("NixoLink: history replay interrupted during POSITION_CLOSED; reconnect will retry");
+         return(false);
+      }
+      closedCount++;
+   }
+   g_lastHistorySync = GetTickCount64();
+   Print("NixoLink: history recovery complete; replayed ", replayed,
+         " deals and ", closedCount, " fully closed positions (", days, " days)");
+   return(true);
 }
 
 //+------------------------------------------------------------------+
@@ -1257,6 +1432,11 @@ int OnInit()
    }
    if(StringLen(InpAuthToken) < 16)
       Print("NixoLink: WARNING - token is short; use at least 16 random characters.");
+   if(InpHistorySyncDays < 1 || InpHistorySyncDays > 30)
+   {
+      Print("NixoLink: InpHistorySyncDays must be 1..30");
+      return(INIT_PARAMETERS_INCORRECT);
+   }
 
    GlobalVariablesDeleteAll("NX_", TimeCurrent() - 86400 * 2);   // drop old idempotency keys
    g_trade.SetAsyncMode(false);
@@ -1300,6 +1480,13 @@ void OnTimer()
    {
       Disconnect("heartbeat timeout");
       return;
+   }
+   if(g_historySyncPending ||
+      (InpHistorySyncIntervalMin > 0 && g_lastHistorySync > 0 &&
+       now - g_lastHistorySync >= (ulong)InpHistorySyncIntervalMin * 60000))
+   {
+      g_historySyncPending = !ReplayTradeHistory();
+      if(!g_historySyncPending && g_socket == INVALID_HANDLE) return;
    }
    if(now - g_lastHb >= (ulong)InpHeartbeatSec * 1000)
    {
