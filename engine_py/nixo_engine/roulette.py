@@ -1,4 +1,4 @@
-"""Account-isolated volume/order roulette, ported from documented legacy rules."""
+"""Per-Telegram-channel volume/order roulette, ported from documented legacy rules."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -31,7 +31,7 @@ class RouletteConfig:
 
 @dataclass
 class RouletteState:
-    account_id: str
+    channel_id: str
     step: int = 1
     activated: bool = False
     baseline_equity: float = 0.0
@@ -39,7 +39,7 @@ class RouletteState:
 
 
 class Roulette:
-    """A separate state object must be loaded for each Telegram user account."""
+    """A separate state object must be loaded for each Telegram source channel."""
 
     def __init__(self, config: RouletteConfig, state: RouletteState):
         config.validate()
