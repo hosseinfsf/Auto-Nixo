@@ -59,6 +59,23 @@ void main() {
   tearDown(() => db.close());
 
   group('pipeline', () {
+    test('defaults to Dry Run when the setting is missing', () async {
+      expect(db.getSetting('mt5_dry_run'), isNull);
+      final decision = await pipeline.process(RawMessageEvent(
+        inputId: 'src1',
+        message: {
+          'input_id': 'src1',
+          'message_id': 'dry-run-default',
+          'text': 'BUY XAUUSD entry 4050 sl 4030 tp1 4080',
+          'caption': '',
+          'timestamp': DateTime.now().toUtc().toIso8601String(),
+        },
+      ));
+      expect(decision.action, DecisionAction.shadow);
+      expect(decision.reason, 'mt5_dry_run_enabled');
+      expect(executor.opened, isEmpty);
+    });
+
     test('defaults to shadow mode for unknown input', () async {
       final decision = await pipeline.process(RawMessageEvent(
         inputId: 'unknown_input',
@@ -72,7 +89,8 @@ void main() {
       ));
       expect(decision.action, DecisionAction.shadow);
     });
-    test('executes a valid signal', () async {
+    test('executes a valid signal when Dry Run is explicitly disabled', () async {
+      db.setSetting('mt5_dry_run', '0');
       final decision = await pipeline.process(RawMessageEvent(
         inputId: 'src1',
         message: {
@@ -161,6 +179,7 @@ void main() {
     });
 
     test('two inputs with different riskPercent get different lots', () async {
+      db.setSetting('mt5_dry_run', '0');
       // src1 already uses p1 (risk_percent 0.5). Add a second input at 1.0.
       db.upsertProfile('p2', {
         'id': 'p2',
@@ -206,6 +225,7 @@ void main() {
     });
 
     test('default risk is 0.25% when the profile omits risk_percent', () async {
+      db.setSetting('mt5_dry_run', '0');
       db.upsertProfile('p3', {'id': 'p3', 'name': 'defaults', 'mode': 'auto'});
       db.upsertInput({
         'id': 'src3',

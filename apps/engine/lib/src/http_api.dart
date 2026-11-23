@@ -14,8 +14,6 @@ import 'package:shelf_router/shelf_router.dart';
 
 import 'db.dart';
 import 'pipeline.dart' as pipe;
-import 'telegram/telegram_proxy_config.dart';
-import 'telegram/telegram_source.dart';
 
 class HttpApi {
   HttpApi({
@@ -27,8 +25,6 @@ class HttpApi {
     this.webhookToken = '',
     this.webhookPassphrase = '',
     this.webDir = 'web',
-    this.telegramSources = const [],
-    this.proxyConfigPath = 'telegram_proxy.json',
   });
 
   final String host;
@@ -39,8 +35,6 @@ class HttpApi {
   final String webhookToken;
   final String webhookPassphrase;
   final String webDir;
-  final List<TelegramSource> telegramSources;
-  final String proxyConfigPath;
 
   HttpServer? _server;
   final _router = Router();
@@ -82,7 +76,7 @@ class HttpApi {
         'terminal_path': db.getSetting('mt5_terminal_path') ?? '',
         'account': db.getSetting('mt5_account') ?? '',
         'server': db.getSetting('mt5_server') ?? '',
-        'dry_run': db.getSetting('mt5_dry_run') == '1',
+        'dry_run': db.getSetting('mt5_dry_run') != '0',
       });
     });
 
@@ -92,7 +86,8 @@ class HttpApi {
       db.setSetting('mt5_terminal_path', '${body['terminal_path'] ?? ''}');
       db.setSetting('mt5_account', '${body['account'] ?? ''}');
       db.setSetting('mt5_server', '${body['server'] ?? ''}');
-      db.setSetting('mt5_dry_run', body['dry_run'] == true ? '1' : '0');
+      // Only an explicit boolean false may disable Dry Run.
+      db.setSetting('mt5_dry_run', body['dry_run'] == false ? '0' : '1');
       db.audit('info', 'mt5 settings updated');
       return _json({'ok': true});
     });
@@ -107,76 +102,58 @@ class HttpApi {
       }
     });
 
-    // Telegram proxy settings (isolated config file).
+    // Proxy links are stored only as text. They are never tested, activated,
+    // or passed to any Telegram/engine network client.
+    _router.get('/telegram/proxy-link', (Request req) {
+      if (!_authorized(req)) return Response.forbidden('unauthorized');
+      final link = db.getSetting('telegram_proxy_link') ?? '';
+      return _json({'configured': link.isNotEmpty, 'mode': 'text_only'});
+    });
+
+    _router.post('/telegram/proxy-link', (Request req) async {
+      if (!_authorized(req)) return Response.forbidden('unauthorized');
+      try {
+        final body = jsonDecode(await req.readAsString()) as Map<String, dynamic>;
+        final value = body['link'];
+        if (value is! String) {
+          return _json({'ok': false, 'error': 'link must be a string'});
+        }
+        final link = value.trim();
+        if (link.isNotEmpty) {
+          final uri = Uri.tryParse(link);
+          if (uri == null ||
+              uri.scheme != 'https' ||
+              uri.host.toLowerCase() != 't.me' ||
+              uri.path != '/proxy' ||
+              !uri.hasQuery ||
+              link.contains(RegExp(r'\s'))) {
+            return _json({
+              'ok': false,
+              'error': 'expected a complete https://t.me/proxy?... link',
+            });
+          }
+        }
+        db.setSetting('telegram_proxy_link', link);
+        db.audit('info', 'Telegram proxy link stored or cleared as text only');
+        return _json({'ok': true, 'configured': link.isNotEmpty, 'mode': 'text_only'});
+      } catch (e) {
+        return _json({'ok': false, 'error': '$e'});
+      }
+    });
+
     _router.get('/telegram/proxy', (Request req) {
       if (!_authorized(req)) return Response.forbidden('unauthorized');
-      final cfg = TelegramProxyConfig.load(path: proxyConfigPath);
-      return _json(cfg.toJson(includeSecrets: false));
+      return Response(410, body: 'Proxy activation and routing are disabled. Use /telegram/proxy-link for text-only storage.');
     });
 
     _router.post('/telegram/proxy', (Request req) async {
       if (!_authorized(req)) return Response.forbidden('unauthorized');
-      try {
-        final body = jsonDecode(await req.readAsString()) as Map<String, dynamic>;
-        final cfg = TelegramProxyConfig.fromJson(body);
-        final errors = cfg.validate();
-        if (errors.isNotEmpty) {
-          return _json({'ok': false, 'errors': errors});
-        }
-        await cfg.save(path: proxyConfigPath);
-        // Reconnect only Telegram clients.
-        for (final src in telegramSources) {
-          await src.reloadProxy(cfg);
-        }
-        db.audit('info', 'telegram proxy settings updated (mode=${cfg.mode.name})');
-        return _json({'ok': true});
-      } catch (e) {
-        return _json({'ok': false, 'error': '$e'});
-      }
+      return Response(410, body: 'Proxy activation and routing are disabled. Use /telegram/proxy-link for text-only storage.');
     });
 
     _router.post('/telegram/proxy/test', (Request req) async {
       if (!_authorized(req)) return Response.forbidden('unauthorized');
-      try {
-        final cfg = TelegramProxyConfig.load(path: proxyConfigPath);
-        final errors = cfg.validate();
-        if (errors.isNotEmpty) {
-          return _json({'ok': false, 'errors': errors});
-        }
-        // Local listener reachability test.
-        bool reachable = false;
-        String? err;
-        try {
-          final socket = await Socket.connect(cfg.host, cfg.port,
-              timeout: Duration(seconds: cfg.connectTimeoutSeconds));
-          await socket.close();
-          reachable = true;
-        } catch (e) {
-          err = '$e';
-        }
-        // TDLib proxy test if client available.
-        bool tgOk = false;
-        String? tgErr;
-        for (final src in telegramSources) {
-          try {
-            tgOk = await src.client.testProxy();
-            tgErr = src.client.lastProxyError;
-          } catch (e) {
-            tgErr = '$e';
-          }
-          break;
-        }
-        return _json({
-          'ok': reachable,
-          'local_listener': reachable,
-          'local_error': err,
-          'telegram_proxy': tgOk,
-          'telegram_proxy_error': tgErr,
-          'mode': cfg.mode.name,
-        });
-      } catch (e) {
-        return _json({'ok': false, 'error': '$e'});
-      }
+      return Response(410, body: 'Proxy testing is disabled by configuration.');
     });
 
     _router.get('/activity', (Request req) {

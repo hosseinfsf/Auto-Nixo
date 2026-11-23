@@ -15,8 +15,6 @@ import 'package:nixo_engine/src/input_registry.dart';
 import 'package:nixo_engine/src/mt5/link_server.dart';
 import 'package:nixo_engine/src/pipeline.dart';
 
-import 'package:nixo_engine/src/telegram/tdlib_client.dart';
-import 'package:nixo_engine/src/telegram/telegram_proxy_config.dart';
 import 'package:nixo_engine/src/telegram/telegram_source.dart';
 import 'package:nixo_engine/src/watchdog.dart';
 
@@ -38,6 +36,13 @@ Future<void> main(List<String> args) async {
   }
 
   final config = EngineConfig.load(path: results['config'] as String);
+  if (config.apiToken.length < 32 ||
+      config.apiToken == 'nixo-dev-token' ||
+      config.apiToken == 'CHANGE-ME') {
+    stderr.writeln('[NIXO] Set api_token to a new random value of at least 32 characters in engine_config.json.');
+    exitCode = 2;
+    return;
+  }
   await _run(config);
 }
 
@@ -46,13 +51,17 @@ Future<void> _run(EngineConfig config) async {
   Directory(config.dataDir).createSync(recursive: true);
 
   final db = Database.open(config.dbPath);
+  // Dry Run remains on until explicitly disabled by the user.
+  if (db.getSetting('mt5_dry_run') == null) {
+    db.setSetting('mt5_dry_run', '1');
+  }
   db.audit('info', 'engine starting');
 
   // MT5 link server.
   final link = Mt5LinkServer(
     host: config.mt5Host,
     port: config.mt5Port,
-    token: config.apiToken.isNotEmpty ? config.apiToken : 'nixo-dev-token',
+    token: config.apiToken,
   );
   await link.start();
 
@@ -128,46 +137,16 @@ Future<void> _run(EngineConfig config) async {
     limits: limits,
     perInputLimits: perInputLimits,
     roulette: roulette,
+    config: PipelineConfig(validitySeconds: config.validitySeconds),
   );
 
   // Input registry.
   final registry = InputRegistry(db: db);
 
-  // Telegram proxy config (isolated file, independent of engine_config.json).
-  final proxyCfg = TelegramProxyConfig.load(path: 'telegram_proxy.json');
-
-  // Telegram sources from DB.
+  // Telegram is managed by the separately started Python/Telethon Listener.
+  // Do not create a second account session or auto-start TDLib here.
+  // Listener queue delivery into Pipeline is implemented in a separate phase.
   final telegramSources = <TelegramSource>[];
-  if (config.telegramApiId > 0) {
-    final client = TdLibClient(TelegramConfig(
-      apiId: config.telegramApiId,
-      apiHash: config.telegramApiHash,
-      sessionDir: '${config.dataDir}/telegram',
-      proxyConfig: proxyCfg,
-    ));
-    try {
-      client.loadLibrary();
-    } catch (e) {
-      print('[engine] TDLib library not found: $e');
-      print('[engine] Place tdjson.dll next to the engine exe.');
-    }
-    for (final row in db.listInputs()) {
-      final type = row['type'] as String;
-      if (type != 'telegram_source') continue;
-      final id = row['id'] as String;
-      final target = row['name'] as String;
-      final src = TelegramSource(
-        inputId: id,
-        target: target,
-        client: client,
-        db: db,
-        proxyConfig: proxyCfg,
-      );
-      registry.register(src);
-      telegramSources.add(src);
-    }
-  }
-
   await registry.startAll();
 
   // Watchdog.
@@ -184,7 +163,6 @@ Future<void> _run(EngineConfig config) async {
     webhookToken: 'nixo-webhook',
     webhookPassphrase: 'nixo-passphrase',
     webDir: 'web',
-    telegramSources: telegramSources,
   );
   api.onKill = () {
     db.audit('warn', 'kill switch activated');

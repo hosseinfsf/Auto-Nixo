@@ -23,13 +23,13 @@
 //--- inputs
 input string InpEngineHost    = "127.0.0.1";
 input int    InpEnginePort    = 9123;
-input string InpAuthToken     = "REDACTED_ENGINE_TOKEN";        // REQUIRED. Same value as engine api_token.
+input string InpAuthToken     = "";        // REQUIRED. Set the same new random token as engine_config.json.
 input int    InpHeartbeatSec  = 2;         // heartbeat interval
 input int    InpReconnectSec  = 2;         // delay between reconnect attempts
 input int    InpRxTimeoutSec  = 6;         // no data from engine for this long => reconnect
 input int    InpTimerMs       = 20;        // poll period (latency of commands)
 input int    InpMagicBase     = 700000;    // used when the engine sends no magic
-input bool   InpAllowReal     = true;     // must be true to trade a REAL account
+input bool   InpAllowReal     = false;    // explicit opt-in required for REAL accounts
 input bool   InpCloseAllAll   = false;     // CLOSE_ALL scope: false = only NX-tagged trades
 input double InpMarginUsePct  = 80.0;      // max share of free margin one order may use
 input int    InpMaxTickAgeSec = 180;       // quote older than this => market treated as closed

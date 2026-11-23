@@ -13,6 +13,7 @@ void main() {
 
   setUp(() {
     db = Database.open(':memory:');
+    db.setSetting('mt5_dry_run', '0');
     executor = FakeExecutor(
       quoteForSymbol: {
         'XAUUSD': Quote(
