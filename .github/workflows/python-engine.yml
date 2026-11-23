@@ -1,0 +1,37 @@
+name: Python Engine Tests
+
+on:
+  push:
+    branches:
+      - jojo/nixo-development
+    paths:
+      - "engine_py/**"
+      - ".github/workflows/python-engine.yml"
+  pull_request:
+    paths:
+      - "engine_py/**"
+      - ".github/workflows/python-engine.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  python-engine:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Compile Python sources
+        working-directory: engine_py
+        run: python -m compileall -q nixo_engine tests
+
+      - name: Run unit and mock integration tests
+        working-directory: engine_py
+        run: python -m unittest discover -s tests -v
