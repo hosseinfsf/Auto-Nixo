@@ -32,6 +32,57 @@ class StoreTests(unittest.TestCase):
             self.assertEqual(store.get_channel_roulette_state(-100111)["step"], 3)
             self.assertEqual(store.get_channel_roulette_state(-100222)["step"], 1)
 
+    def test_post_identity_is_channel_plus_message_id_and_routes_to_profile(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = NixoStore(Path(tmp) / "db.sqlite")
+            store.ensure_account("mt5-a", "MT5 A")
+            store.ensure_account("mt5-b", "MT5 B")
+            store.ensure_channel(-10011, "Channel A", "mt5-a")
+            store.ensure_channel(-10022, "Channel B", "mt5-b")
+
+            a = store.record_channel_signal(
+                chat_id=-10011, message_id=125, edit_version=0,
+                event_type="new", telegram_date_utc=None,
+                validity_seconds=180, raw_text="BUY XAUUSD",
+            )
+            b = store.record_channel_signal(
+                chat_id=-10022, message_id=125, edit_version=0,
+                event_type="new", telegram_date_utc=None,
+                validity_seconds=180, raw_text="BUY XAUUSD",
+            )
+            self.assertIsNotNone(a)
+            self.assertIsNotNone(b)
+            self.assertNotEqual(a["signal_id"], b["signal_id"])
+            self.assertEqual(a["trading_profile_id"], "mt5-a")
+            self.assertEqual(b["trading_profile_id"], "mt5-b")
+
+            duplicate = store.record_channel_signal(
+                chat_id=-10011, message_id=125, edit_version=0,
+                event_type="new", telegram_date_utc=None,
+                validity_seconds=180, raw_text="BUY XAUUSD",
+            )
+            self.assertIsNone(duplicate)
+
+            edited = store.record_channel_signal(
+                chat_id=-10011, message_id=125, edit_version=1,
+                event_type="edit", telegram_date_utc=None,
+                validity_seconds=180, raw_text="BUY XAUUSD SL 4000",
+            )
+            self.assertIsNotNone(edited)
+            self.assertNotEqual(edited["signal_id"], a["signal_id"])
+
+    def test_unconfigured_or_disabled_channel_is_not_routed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = NixoStore(Path(tmp) / "db.sqlite")
+            store.ensure_account("mt5-a", "MT5 A")
+            store.ensure_channel(-10011, "Channel A", "mt5-a", enabled=False)
+            result = store.record_channel_signal(
+                chat_id=-10011, message_id=1, edit_version=0,
+                event_type="new", telegram_date_utc=None,
+                validity_seconds=180, raw_text="BUY XAUUSD",
+            )
+            self.assertIsNone(result)
+
     def test_channel_can_route_to_different_mt5_profiles(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = NixoStore(Path(tmp) / "db.sqlite")
