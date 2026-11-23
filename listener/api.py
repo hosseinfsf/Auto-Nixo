@@ -5,10 +5,10 @@ Endpoints:
   GET  /api/listener/status   -> {running, pid, log, status}
   POST /api/listener/start    -> {message}
   POST /api/listener/stop     -> {message}
-  GET  /api/proxy/list        -> {proxies: [...]}  (secrets masked)
-  POST /api/proxy/add         -> {message}
-  POST /api/proxy/test        -> {ok, latency, error}
-  POST /api/proxy/remove      -> {message}
+  GET  /api/sources           -> configured sources and per-source TTL
+  POST /api/sources           -> add/update a source and its TTL
+  POST /api/sources/remove    -> remove a source
+  GET/POST /api/proxy/link    -> store an inert Telegram proxy URL as text only
   GET  /api/queue/stats       -> {total, pending, processed, failed, expired}
   GET  /api/queue/recent      -> {rows: [...]}
 """
@@ -28,6 +28,7 @@ BASE_DIR = Path(__file__).resolve().parent
 DB_PATH = BASE_DIR / "data" / "listener_queue.db"
 PID_FILE = BASE_DIR / "data" / "listener.pid"
 STATUS_FILE = BASE_DIR / "data" / "status.json"
+PROXY_LINK_FILE = BASE_DIR / "data" / "telegram_proxy_link.txt"
 LISTENER_SCRIPT = BASE_DIR / "listener.py"
 PYTHON = sys.executable
 PORT = 9125
@@ -50,17 +51,25 @@ if not LISTENER_API_TOKEN:
 
 
 def get_db():
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(DB_PATH))
+    conn.execute("PRAGMA busy_timeout=5000;")
     conn.row_factory = sqlite3.Row
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS sources (
+            chat_id INTEGER PRIMARY KEY,
+            title TEXT,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            ttl_seconds INTEGER NOT NULL DEFAULT 180
+        )
+    """)
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(sources)")}
+    if "ttl_seconds" not in columns:
+        conn.execute(
+            "ALTER TABLE sources ADD COLUMN ttl_seconds INTEGER NOT NULL DEFAULT 180"
+        )
+    conn.commit()
     return conn
-
-
-def _mask_secret(s):
-    if not s:
-        return None
-    if len(s) <= 8:
-        return "****"
-    return s[:4] + "****" + s[-4:]
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -143,37 +152,42 @@ class Handler(BaseHTTPRequestHandler):
                     pass
             self._json({"running": running, "pid": pid, "log": log_tail, "status": status_json})
 
-        elif path == "/api/proxy/list":
+        elif path == "/api/sources":
             conn = get_db()
             rows = conn.execute(
-                "SELECT type, host, port, status, latency_ms, fail_count, priority FROM proxy_list ORDER BY priority ASC"
+                "SELECT chat_id, title, enabled, ttl_seconds FROM sources ORDER BY chat_id"
             ).fetchall()
-            proxies = []
-            for r in rows:
-                d = dict(r)
-                secret_row = conn.execute(
-                    "SELECT secret FROM proxy_list WHERE type=? AND host=? AND port=?",
-                    (d["type"], d["host"], d["port"]),
-                ).fetchone()
-                d["secret"] = _mask_secret(secret_row[0] if secret_row else None)
-                proxies.append(d)
             conn.close()
-            self._json({"proxies": proxies})
+            self._json({"sources": [dict(r) for r in rows]})
+
+        elif path == "/api/proxy/link":
+            configured = PROXY_LINK_FILE.exists() and PROXY_LINK_FILE.stat().st_size > 0
+            self._json({"configured": configured, "mode": "text_only"})
+
+        elif path == "/api/proxy/list":
+            self._json({
+                "error": "proxy activation, routing and testing are disabled",
+                "mode": "text_only",
+            }, 410)
 
         elif path == "/api/queue/stats":
             conn = get_db()
             total = conn.execute("SELECT COUNT(*) FROM listener_queue").fetchone()[0]
             pending = conn.execute("SELECT COUNT(*) FROM listener_queue WHERE state='pending'").fetchone()[0]
             processed = conn.execute("SELECT COUNT(*) FROM listener_queue WHERE state='processed'").fetchone()[0]
+            processing = conn.execute("SELECT COUNT(*) FROM listener_queue WHERE state='processing'").fetchone()[0]
             failed = conn.execute("SELECT COUNT(*) FROM listener_queue WHERE state='failed'").fetchone()[0]
             expired = conn.execute("SELECT COUNT(*) FROM listener_queue WHERE state='expired'").fetchone()[0]
+            deleted = conn.execute("SELECT COUNT(*) FROM listener_queue WHERE state='deleted'").fetchone()[0]
             conn.close()
-            self._json({"total": total, "pending": pending, "processed": processed, "failed": failed, "expired": expired})
+            self._json({"total": total, "pending": pending, "processing": processing,
+                        "processed": processed, "failed": failed, "expired": expired,
+                        "deleted": deleted})
 
         elif path == "/api/queue/recent":
             conn = get_db()
             rows = conn.execute(
-                "SELECT chat_id, message_id, edit_version, update_type, state, date_utc FROM listener_queue ORDER BY id DESC LIMIT 20"
+                "SELECT chat_id, message_id, edit_version, update_type, state, date_utc, attempts, error FROM listener_queue ORDER BY id DESC LIMIT 20"
             ).fetchall()
             self._json({"rows": [dict(r) for r in rows]})
             conn.close()
@@ -230,64 +244,69 @@ class Handler(BaseHTTPRequestHandler):
                 PID_FILE.unlink(missing_ok=True)
                 self._json({"message": "Listener not running"})
 
-        elif path == "/api/proxy/add":
-            conn = get_db()
+        elif path == "/api/sources":
             try:
-                conn.execute(
-                    "INSERT OR IGNORE INTO proxy_list (type, host, port, secret, priority, status) VALUES (?,?,?,?,?,?)",
-                    (body["type"], body["host"], body["port"], body.get("secret"), 0, "active"),
-                )
-                conn.commit()
-                self._json({"message": "Proxy added"})
-            except Exception as e:
-                self._json({"error": str(e)}, 400)
-            finally:
-                conn.close()
-
-        elif path == "/api/proxy/test":
-            import asyncio
-            sys.path.insert(0, str(BASE_DIR))
-            from listener import check_proxy_health
-            ptype = body["type"]
-            host = body["host"]
-            port = body["port"]
-            secret = body.get("secret")
-
-            async def run_test():
-                return await check_proxy_health(ptype, host, port, secret)
-
-            try:
-                ok, lat, err = asyncio.run(run_test())
+                chat_id = int(body.get("chat_id", 0))
+                ttl_seconds = int(body.get("ttl_seconds", 180))
+                title = body.get("title")
+                enabled = 1 if body.get("enabled", True) is True else 0
+                if chat_id == 0:
+                    raise ValueError("chat_id must be a non-zero integer")
+                if ttl_seconds < 1 or ttl_seconds > 86400:
+                    raise ValueError("ttl_seconds must be between 1 and 86400")
                 conn = get_db()
-                if ok:
-                    status = "active"
-                    fc = 0
-                else:
-                    cur = conn.execute(
-                        "SELECT fail_count FROM proxy_list WHERE type=? AND host=? AND port=?",
-                        (ptype, host, port),
-                    ).fetchone()
-                    fc = (cur[0] if cur else 0) + 1
-                    status = "quarantined" if fc >= 3 else "active"
-                conn.execute(
-                    "UPDATE proxy_list SET status=?, latency_ms=?, last_check=?, fail_count=? WHERE type=? AND host=? AND port=?",
-                    (status, lat, __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(), fc, ptype, host, port),
-                )
+                conn.execute("""
+                    INSERT INTO sources (chat_id, title, enabled, ttl_seconds)
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT(chat_id) DO UPDATE SET
+                        title=excluded.title,
+                        enabled=excluded.enabled,
+                        ttl_seconds=excluded.ttl_seconds
+                """, (chat_id, title, enabled, ttl_seconds))
                 conn.commit()
                 conn.close()
-                self._json({"ok": ok, "latency": lat, "error": err, "fail_count": fc, "status": status})
-            except Exception as e:
-                self._json({"ok": False, "latency": 0, "error": str(e)})
+                self._json({"ok": True, "chat_id": chat_id, "ttl_seconds": ttl_seconds})
+            except (TypeError, ValueError, sqlite3.Error) as e:
+                self._json({"error": str(e)}, 400)
 
-        elif path == "/api/proxy/remove":
-            conn = get_db()
-            conn.execute(
-                "DELETE FROM proxy_list WHERE type=? AND host=? AND port=?",
-                (body["type"], body["host"], body["port"]),
-            )
-            conn.commit()
-            conn.close()
-            self._json({"message": "Proxy removed"})
+        elif path == "/api/sources/remove":
+            try:
+                chat_id = int(body.get("chat_id", 0))
+                if chat_id == 0:
+                    raise ValueError("chat_id must be a non-zero integer")
+                conn = get_db()
+                conn.execute("DELETE FROM sources WHERE chat_id=?", (chat_id,))
+                conn.commit()
+                conn.close()
+                self._json({"ok": True, "chat_id": chat_id})
+            except (TypeError, ValueError, sqlite3.Error) as e:
+                self._json({"error": str(e)}, 400)
+
+        elif path == "/api/proxy/link":
+            link = body.get("link", "")
+            if not isinstance(link, str):
+                self._json({"error": "link must be a string"}, 400)
+                return
+            link = link.strip()
+            if link:
+                parsed = urlparse(link)
+                if (parsed.scheme != "https" or parsed.netloc.lower() != "t.me"
+                        or parsed.path != "/proxy" or not parsed.query
+                        or any(ch.isspace() for ch in link)):
+                    self._json({"error": "expected a complete https://t.me/proxy?... link"}, 400)
+                    return
+                PROXY_LINK_FILE.parent.mkdir(parents=True, exist_ok=True)
+                PROXY_LINK_FILE.write_text(link, encoding="utf-8")
+            else:
+                PROXY_LINK_FILE.unlink(missing_ok=True)
+            # Never echo or log the complete URL; its query can contain a secret.
+            self._json({"ok": True, "configured": bool(link), "mode": "text_only"})
+
+        elif path in ("/api/proxy/add", "/api/proxy/test", "/api/proxy/remove"):
+            self._json({
+                "error": "proxy activation, routing and testing are disabled; use /api/proxy/link for text-only storage",
+                "mode": "text_only",
+            }, 410)
 
         else:
             self._json({"error": "not found"}, 404)
