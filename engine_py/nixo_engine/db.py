@@ -7,7 +7,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 
 class NixoStore:
@@ -128,6 +128,15 @@ class NixoStore:
                 )""")
                 conn.execute("CREATE INDEX idx_channel_events_signal ON channel_post_events(signal_id)")
                 conn.execute("INSERT INTO schema_migrations(version) VALUES (3)")
+            if current < 4:
+                conn.execute("""CREATE TABLE signal_parse_results (
+                    signal_id INTEGER PRIMARY KEY REFERENCES signals(signal_id) ON DELETE CASCADE,
+                    parse_state TEXT NOT NULL,
+                    parsed_json TEXT, error_code TEXT, error_message TEXT,
+                    processed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )""")
+                conn.execute("CREATE INDEX idx_signals_processing ON signals(status, signal_id)")
+                conn.execute("INSERT INTO schema_migrations(version) VALUES (4)")
             conn.commit()
         except Exception:
             conn.rollback()
