@@ -1479,12 +1479,13 @@ void OnTimer()
       Disconnect("heartbeat timeout");
       return;
    }
-   if((g_historySyncPending && now >= g_nextHistorySyncTry) ||
-      (InpHistorySyncIntervalMin > 0 && g_lastHistorySync > 0 &&
-       now - g_lastHistorySync >= (ulong)InpHistorySyncIntervalMin * 60000))
+   bool historyIntervalDue = (InpHistorySyncIntervalMin > 0 && g_lastHistorySync > 0 &&
+      now - g_lastHistorySync >= (ulong)InpHistorySyncIntervalMin * 60000);
+   if((g_historySyncPending || historyIntervalDue) && now >= g_nextHistorySyncTry)
    {
       g_historySyncPending = !ReplayTradeHistory();
       if(g_historySyncPending) g_nextHistorySyncTry = now + 5000;
+      else g_nextHistorySyncTry = 0;
       if(!g_historySyncPending && g_socket == INVALID_HANDLE) return;
    }
    if(now - g_lastHb >= (ulong)InpHeartbeatSec * 1000)
