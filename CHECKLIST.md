@@ -21,9 +21,14 @@ an optional profile (default OFF). AI is an optional module (OFF for now).
 
 - [~] Table inputs: id, type (telegram_source | tradingview_webhook), name,
       enabled, profile_id, status, last_message_at, last_error. (`db.dart`)
-- [ ] On engine start: load settings → start MT5 link → start Telegram service
-      → start every enabled input adapter → catch-up (inside validity window) →
-      arm trading. (wiring not run)
+- [~] Python Listener runs as a separate manually controlled process; Engine
+      consumes its shared SQLite queue without auto-starting Telegram.
+- [~] Queue consumer: lease/claim/retry/processed ACK, original timestamp and
+      per-channel TTL recheck; queue execution permission defaults OFF.
+      (code + regression tests written; owner-PC execution pending)
+- [~] Durable execution intents: write immutable order plan before MT5 OPEN;
+      preserve uncertain outcomes and retry with the same client order ID.
+      (code + lost-ACK regression test written; owner-PC execution pending)
 - [ ] Each input shows live health in the UI; a dead input raises an alert and
       auto-retries.
 - [ ] Input type "telegram_source": channel/group by @username, t.me link,
@@ -65,19 +70,22 @@ an optional profile (default OFF). AI is an optional module (OFF for now).
 - [~] Layout: packages/core, apps/engine, apps/ui, mt5/NixoLink.mq5, tests/,
       docs/, reports/.
 - [~] SQLite (WAL) store: inputs, profiles, raw_messages, signals, decisions,
-      orders/legs, journal, samples, outcomes, stats, audit, settings.
-      (`db.dart`)
-- [~] Telegram service: auto-start, state machine, watchdog, never exits on
-      network errors. (`telegram_source.dart` + `watchdog.dart`)
+      orders/legs, execution_intents, journal, samples, outcomes, stats, audit,
+      settings. (`db.dart`)
+- [~] Telegram User Account Listener is a separate manually controlled
+      Python/Telethon process; Engine consumes its durable SQLite queue and
+      never auto-starts a Telegram session.
 - [~] Proxy manager: MTProto, SOCKS5, HTTP, local proxy, direct; latency test;
       priority; failover; status. (`proxy_manager.dart`)
 - [~] Input registry (B1) with auto-start. (`input_registry.dart`)
 - [ ] Catch-up after reconnect only inside validity window. (not implemented)
 - [ ] Message policies: forwarded, reply, edit, album, caption+photo, deleted.
       (partial in `telegram_source.dart`)
-- [~] Idempotency: intent before send; EA acks with client_order_id; reconcile
-      on restart; dedupe key = (input_id, message_id, edit_version).
-      (`pipeline.dart` + `db.dart`)
+- [~] Idempotency: durable intent before send; EA reserves client_order_id
+      before broker-side effects and returns the original ticket on duplicates.
+      Unresolved reservations go to manual review; no exactly-once guarantee.
+      Dedupe key = (input_id, message_id, edit_version). (`pipeline.dart`,
+      `db.dart`, `NixoLink.mq5`)
 - [~] Replay tool with fake executor. (`replay.dart`)
 - [ ] Tests: fake Telegram, fake EA, chaos tests. (pipeline/protocol tests
       written [~], NOT run)
