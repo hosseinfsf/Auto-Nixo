@@ -73,3 +73,29 @@ database failures are retried with bounded exponential backoff.
 This worker does not parse trade instructions, create execution intents, alter
 roulette steps, contact NixoLink, or place orders. Unknown/disabled channel
 mappings are marked ignored; expired messages are marked expired.
+
+
+## Strict signal parsing stage (non-executing)
+
+After the raw inbox consumer has moved events into the Engine database, run the
+deterministic parser as a separate process:
+
+```powershell
+py -3 -m nixo_engine.signal_processor --engine-db .\data\nixo_engine.db
+```
+
+The parser accepts explicit direction, one recognized symbol, one stop-loss,
+at least one labelled take-profit, and either an entry price/range or an
+explicit NOW/MARKET instruction. Persian and Arabic digits are normalized.
+Conflicting directions, multiple symbols/entry zones, missing levels, and
+wrong-side SL/TP values are rejected rather than guessed.
+
+Only the original `new` event can be parsed. Telegram edits and deletes are
+recorded for audit but blocked from producing a new trade signal. If a newer
+edit is already present when the original event is parsed, the original is
+marked superseded. The eventual execution stage must repeat this latest-version
+and source-enabled check immediately before creating/sending an intent.
+
+Normalized parse results and rejection reasons are stored in
+`signal_parse_results` (schema migration 4). This stage creates no execution
+intents and sends no MT5 commands. Live execution remains disabled.
