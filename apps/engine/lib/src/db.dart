@@ -440,6 +440,25 @@ class Database {
     return Map<String, dynamic>.from(rows.first);
   }
 
+  /// True when an earlier version of this message was executed or may
+  /// have reached MT5. The deterministic signal ID mirrors Pipeline.process.
+  bool hasPriorExecutionForMessage(
+    String inputId,
+    String messageId,
+    int beforeEditVersion,
+  ) {
+    for (var version = 0; version < beforeEditVersion; version++) {
+      final signalId = 'sig_${inputId}_${messageId}_${version}';
+      if (decisionFor(signalId)?['action'] == 'execute') return true;
+      final intent = executionIntentFor(signalId);
+      final status = intent?['status'] as String?;
+      if (const {
+        'prepared', 'in_flight', 'uncertain', 'acked', 'manual_review'
+      }.contains(status)) return true;
+    }
+    return false;
+  }
+
   List<Map<String, dynamic>> unfinishedSignals() {
     final rows = _db.select(
       'SELECT s.* FROM signals s '

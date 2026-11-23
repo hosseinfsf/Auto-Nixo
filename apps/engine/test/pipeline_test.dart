@@ -58,7 +58,37 @@ void main() {
 
   tearDown(() => db.close());
 
-  group('pipeline', () {
+  group('pipeline', () {\n    test('detects earlier executed Telegram message versions', () {
+      db.insertSignal({
+        'id': 'sig_src1_edit-check_0',
+        'input_id': 'src1',
+        'message_id': 'edit-check',
+        'json': '{}',
+      });
+      db.insertDecision({
+        'signal_id': 'sig_src1_edit-check_0',
+        'action': 'execute',
+        'reason': 'test',
+        'validation': '',
+        'sizing': '',
+        'order_json': '',
+      });
+      expect(db.hasPriorExecutionForMessage('src1', 'edit-check', 1), isTrue);
+      expect(db.hasPriorExecutionForMessage('src1', 'edit-check', 0), isFalse);
+    });
+
+    test('detects uncertain earlier execution intents', () {
+      db.createExecutionIntent(
+        signalId: 'sig_src1_edit-uncertain_0',
+        intent: {'order': {}, 'sizing': {}},
+      );
+      db.updateExecutionIntent(
+        'sig_src1_edit-uncertain_0', status: 'uncertain', lastError: 'timeout',
+      );
+      expect(db.hasPriorExecutionForMessage('src1', 'edit-uncertain', 1), isTrue);
+    });
+
+
     test('defaults to Dry Run when the setting is missing', () async {
       expect(db.getSetting('mt5_dry_run'), isNull);
       final decision = await pipeline.process(RawMessageEvent(
