@@ -13,8 +13,11 @@ Telegram Listener or the MQL5 EA.
   win +1, loss -1, flat unchanged.
 - Enabled means configured/on; the growth trigger still controls when the
   progressive volume multiplier activates.
-- MT5 execution is not enabled by this foundation. The example config is
-  `dry_run=true`; no live order path is wired into a queue consumer.
+- The risk planner is wired in dry-run mode only. It sends read-only MT5
+  requests (`GET_ACCOUNT`, `GET_SYMBOL_INFO`, `GET_RISK_PER_LOT`) and persists
+  a `dry_run` plan; it never sends `OPEN`.
+- Real accounts are rejected by the planner, and the EA keeps
+  `InpAllowReal=false`.
 - Real-account permission remains blocked by the EA input `InpAllowReal=false`.
 
 ## MT5 wire contract
@@ -24,8 +27,9 @@ on 127.0.0.1:9123. Messages are UTF-8, one line per message, fields are
 `KEY=VALUE` separated by `|`, and values percent-escape %, |, =, CR and LF.
 The first message is `CMD=AUTH|TOKEN=...`; commands include OPEN, MODIFY,
 CLOSE, CANCEL, CLOSE_ALL, GET_ACCOUNT, GET_POSITIONS, GET_SYMBOL_INFO and
-GET_RISK_PER_LOT. This module currently provides framing/encoding primitives
-only; it does not bind a socket or submit orders.
+GET_RISK_PER_LOT. The Python `NixoLinkServer` binds only to loopback and handles authentication,
+heartbeats, and correlated read-only requests. The risk planner uses this
+protocol to size dry-run plans; the `OPEN` command remains blocked.
 
 ## Database
 
@@ -50,7 +54,7 @@ The test suite uses only the Python standard library.
 - The existing Listener pins Telethon 1.46.0 for Telegram User Account / MTProto; keep one session implementation rather than adding a second client stack. Pyrogram is archived and is not selected.
 - The asyncio TCP server and mock-EA test approach were reviewed against the MIT-licensed https://github.com/RAo797bit/mt5-multi-terminal-manager. Its JSON wire protocol and EA are incompatible with NixoLink, so Nixo uses its own KEY=VALUE protocol implementation.
 - Telegram-to-MT5 projects were audited for parser/test ideas. No source is copied from projects without a declared license or where parser behavior silently defaults missing trade direction/levels.
-- The server authenticates NixoLink, tracks ACCOUNT snapshots, correlates REQ_ID replies, and blocks OPEN while dry_run=true. The separate Listener queue consumer now persists raw channel events into the Engine inbox; parsing and trade execution remain unwired.
+- The server authenticates NixoLink, tracks ACCOUNT snapshots, correlates REQ_ID replies, and blocks OPEN while dry_run=true. The Listener queue consumer persists raw channel events, the strict parser validates them, and the risk planner creates non-executing dry-run intents. Actual order submission and closed-trade roulette reconciliation are not enabled.
 
 ## Telegram Listener queue handoff (raw inbox only)
 
@@ -99,3 +103,56 @@ and source-enabled check immediately before creating/sending an intent.
 Normalized parse results and rejection reasons are stored in
 `signal_parse_results` (schema migration 4). This stage creates no execution
 intents and sends no MT5 commands. Live execution remains disabled.
+
+
+## Risk planning and MT5 dry-run stage
+
+After the Listener queue consumer and strict parser are running, start the
+risk planner. It also hosts the authenticated NixoLink TCP server:
+
+```powershell
+py -3 -m nixo_engine.execution --config .\engine_config.json --engine-db .\data\nixo_engine.db
+```
+
+The config file must contain the existing `api_token`, and may contain
+`host` (default `127.0.0.1`), `port` (default `9123`), and an optional
+`profile_login_map` for installations with multiple MT5 terminals:
+
+```json
+{
+  "api_token": "YOUR_EXISTING_LONG_RANDOM_TOKEN",
+  "host": "127.0.0.1",
+  "port": 9123,
+  "profile_login_map": {
+    "mt5-demo": 12345678
+  }
+}
+```
+
+The numeric login above is an example placeholder; use the login actually
+reported by the connected terminal. If exactly one MT5 terminal is connected,
+it can be selected automatically. With multiple terminals, an explicit
+profile-to-login mapping is required; otherwise the signal is deferred.
+
+For each parsed signal, the planner rechecks channel/profile enablement,
+message version, and the channel's 3-minute default TTL. It reads the account
+equity, symbol bid/ask and broker volume limits, then asks MT5
+`OrderCalcProfit` for the monetary risk of one lot between entry and SL.
+Risk is calculated from that channel's independent roulette state. Lots are
+rounded DOWN to the broker's volume step; the planner never rounds up to meet
+the minimum lot. If the safe volume is below the broker minimum, the signal
+is placed in `manual_review`.
+
+Market `NOW` signals use ask for BUY and bid for SELL. Pending orders require
+one exact entry price and a valid limit/stop relationship to the live quote.
+Entry zones are not converted to an arbitrary midpoint; they require manual
+price selection. Real accounts, stale quotes, closed markets, unsupported
+symbols, invalid SL/TP geometry, and ambiguous terminal routing are blocked
+or deferred.
+
+The planner stores a deterministic client-order ID and a dry-run intent with
+the full risk calculation. Order roulette divides the channel's total risk
+budget among its requested order count. It does not send `OPEN`, `MODIFY`,
+`CLOSE`, or any other trading command. Roulette progression still waits for
+reconciled, actual closed-trade outcomes; this stage does not fabricate wins
+or losses from acknowledgements.
