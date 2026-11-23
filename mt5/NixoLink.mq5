@@ -1254,7 +1254,7 @@ bool ReplayTradeHistory()
                int hashAt = StringFind(dc, "#");
                string normalized = hashAt >= 0 ? StringSubstr(dc, 0, hashAt) : dc;
                if(openingComment == "") openingComment = normalized;
-               else if(openingComment != normalized) ambiguousOpening = true;
+               else if(StringSubstr(openingComment, 0, 20) != StringSubstr(normalized, 0, 20)) ambiguousOpening = true;
             }
          }
          else if(de == DEAL_ENTRY_OUT || de == DEAL_ENTRY_OUT_BY)
@@ -1387,7 +1387,7 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
                      int hashAt = StringFind(dc, "#");
                      string normalized = hashAt >= 0 ? StringSubstr(dc, 0, hashAt) : dc;
                      if(openingComment == "") openingComment = normalized;
-                     else if(openingComment != normalized) ambiguousOpening = true;
+                     else if(StringSubstr(openingComment, 0, 20) != StringSubstr(normalized, 0, 20)) ambiguousOpening = true;
                   }
                }
                else if(de == DEAL_ENTRY_OUT || de == DEAL_ENTRY_OUT_BY)
