@@ -7,7 +7,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 class NixoStore:
@@ -268,6 +268,16 @@ class NixoStore:
             return {"signal_id": signal_id, "trading_profile_id": profile_id,
                     "chat_id": int(chat_id), "message_id": int(message_id),
                     "edit_version": int(edit_version)}
+
+    def has_channel_event(self, *, chat_id: int, message_id: int, edit_version: int) -> bool:
+        """Return whether this exact channel post version is already durable."""
+        with self.connect() as db:
+            row = db.execute(
+                """SELECT 1 FROM channel_post_events
+                   WHERE chat_id=? AND message_id=? AND edit_version=?""",
+                (int(chat_id), int(message_id), int(edit_version)),
+            ).fetchone()
+            return row is not None
 
     def record_signal(self, *, account_id: str, chat_id: int, message_id: int,
                       edit_version: int, event_type: str, telegram_date_utc: str | None,
