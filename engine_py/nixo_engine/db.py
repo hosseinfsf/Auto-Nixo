@@ -115,6 +115,19 @@ class NixoStore:
                 )""")
                 conn.execute("CREATE INDEX idx_channels_profile ON telegram_channels(trading_profile_id)")
                 conn.execute("INSERT INTO schema_migrations(version) VALUES (2)")
+            if current < 3:
+                conn.execute("""CREATE TABLE channel_post_events (
+                    event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    chat_id INTEGER NOT NULL REFERENCES telegram_channels(chat_id),
+                    message_id INTEGER NOT NULL CHECK(message_id > 0),
+                    edit_version INTEGER NOT NULL DEFAULT 0 CHECK(edit_version >= 0),
+                    event_type TEXT NOT NULL,
+                    signal_id INTEGER REFERENCES signals(signal_id),
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(chat_id, message_id, edit_version)
+                )""")
+                conn.execute("CREATE INDEX idx_channel_events_signal ON channel_post_events(signal_id)")
+                conn.execute("INSERT INTO schema_migrations(version) VALUES (3)")
             conn.commit()
         except Exception:
             conn.rollback()
@@ -209,6 +222,52 @@ class NixoStore:
                 (step, int(activated), baseline_equity, action, int(chat_id)))
             if cur.rowcount != 1:
                 raise KeyError(chat_id)
+
+    def record_channel_signal(self, *, chat_id: int, message_id: int,
+                              edit_version: int, event_type: str,
+                              telegram_date_utc: str | None,
+                              validity_seconds: int, raw_text: str | None,
+                              payload: dict[str, Any] | None = None) -> dict[str, Any] | None:
+        """Route a channel post to its configured MT5 profile exactly once.
+
+        Telegram message IDs are only unique within a channel, so deduplication
+        always uses the composite (chat_id, message_id, edit_version) identity.
+        """
+        if int(message_id) <= 0 or int(edit_version) < 0:
+            raise ValueError("message_id must be positive and edit_version non-negative")
+        if not 1 <= int(validity_seconds) <= 86400:
+            raise ValueError("validity_seconds must be between 1 and 86400")
+        with self.transaction() as db:
+            channel = db.execute(
+                """SELECT trading_profile_id FROM telegram_channels
+                   WHERE chat_id=? AND enabled=1""", (int(chat_id),)
+            ).fetchone()
+            if channel is None:
+                return None
+            profile_id = str(channel["trading_profile_id"])
+            cur = db.execute(
+                """INSERT OR IGNORE INTO channel_post_events
+                   (chat_id,message_id,edit_version,event_type)
+                   VALUES(?,?,?,?)""",
+                (int(chat_id), int(message_id), int(edit_version), str(event_type)),
+            )
+            if cur.rowcount != 1:
+                return None
+            sig = db.execute(
+                """INSERT INTO signals
+                   (account_id,source_chat_id,source_message_id,edit_version,event_type,
+                    telegram_date_utc,validity_seconds,raw_text,payload_json)
+                   VALUES(?,?,?,?,?,?,?,?,?)""",
+                (profile_id, int(chat_id), int(message_id), int(edit_version),
+                 str(event_type), telegram_date_utc, int(validity_seconds), raw_text,
+                 json.dumps(payload or {}, separators=(",", ":"), sort_keys=True)),
+            )
+            signal_id = int(sig.lastrowid)
+            db.execute("UPDATE channel_post_events SET signal_id=? WHERE event_id=?",
+                       (signal_id, int(cur.lastrowid)))
+            return {"signal_id": signal_id, "trading_profile_id": profile_id,
+                    "chat_id": int(chat_id), "message_id": int(message_id),
+                    "edit_version": int(edit_version)}
 
     def record_signal(self, *, account_id: str, chat_id: int, message_id: int,
                       edit_version: int, event_type: str, telegram_date_utc: str | None,
