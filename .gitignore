@@ -64,3 +64,8 @@ windows/flutter/ephemeral/
 reports/*_secrets*
 *.csv
 *.pdf
+
+# Secret-bearing configuration (never commit)
+apps/engine/engine_config.json
+engine_py/engine_config.json
+__pycache__/
