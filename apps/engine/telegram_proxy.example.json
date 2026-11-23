@@ -1,0 +1,18 @@
+{
+  "_comment": "Copy to telegram_proxy.json and fill in. Never commit telegram_proxy.json (contains secrets).",
+
+  "enabled": false,
+  "mode": "disabled",
+  "type": "socks5",
+  "host": "127.0.0.1",
+  "port": 10808,
+  "username": "",
+  "password": "",
+  "secret": "",
+  "rdns": true,
+  "connect_timeout_seconds": 10,
+  "max_retries": 3,
+  "retry_delay_seconds": 5,
+  "reconnect_on_failure": true,
+  "direct_fallback": false
+}

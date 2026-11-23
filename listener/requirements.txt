@@ -1,0 +1,9 @@
+﻿# NIXO Listener — pinned dependencies
+# Install: pip install -r requirements.txt
+# Verify hashes: pip install --require-hashes -r requirements.txt
+Telethon==1.46.0 \
+    --hash=sha256:8357f5719376a9c1ddf0999136a44594a5b21b453647f1e146c169483b6a67df
+Pytdbot==0.8.8 \
+    --hash=sha256:6ee8fb06d2e28818f5869936794666e94c2e8d07a5edf52d20bc3e51f15a5c44
+python-socks==3.2.2
+python-dotenv==1.0.1

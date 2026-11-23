@@ -16,6 +16,7 @@ import 'package:nixo_engine/src/mt5/link_server.dart';
 import 'package:nixo_engine/src/pipeline.dart';
 
 import 'package:nixo_engine/src/telegram/tdlib_client.dart';
+import 'package:nixo_engine/src/telegram/telegram_proxy_config.dart';
 import 'package:nixo_engine/src/telegram/telegram_source.dart';
 import 'package:nixo_engine/src/watchdog.dart';
 
@@ -132,6 +133,9 @@ Future<void> _run(EngineConfig config) async {
   // Input registry.
   final registry = InputRegistry(db: db);
 
+  // Telegram proxy config (isolated file, independent of engine_config.json).
+  final proxyCfg = TelegramProxyConfig.load(path: 'telegram_proxy.json');
+
   // Telegram sources from DB.
   final telegramSources = <TelegramSource>[];
   if (config.telegramApiId > 0) {
@@ -139,6 +143,7 @@ Future<void> _run(EngineConfig config) async {
       apiId: config.telegramApiId,
       apiHash: config.telegramApiHash,
       sessionDir: '${config.dataDir}/telegram',
+      proxyConfig: proxyCfg,
     ));
     try {
       client.loadLibrary();
@@ -156,6 +161,7 @@ Future<void> _run(EngineConfig config) async {
         target: target,
         client: client,
         db: db,
+        proxyConfig: proxyCfg,
       );
       registry.register(src);
       telegramSources.add(src);
@@ -178,6 +184,7 @@ Future<void> _run(EngineConfig config) async {
     webhookToken: 'nixo-webhook',
     webhookPassphrase: 'nixo-passphrase',
     webDir: 'web',
+    telegramSources: telegramSources,
   );
   api.onKill = () {
     db.audit('warn', 'kill switch activated');

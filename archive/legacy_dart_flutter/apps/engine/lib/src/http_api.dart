@@ -14,6 +14,7 @@ import 'package:shelf_router/shelf_router.dart';
 
 import 'db.dart';
 import 'pipeline.dart' as pipe;
+import 'telegram/telegram_proxy_config.dart';
 import 'telegram/telegram_source.dart';
 
 class HttpApi {
@@ -26,6 +27,8 @@ class HttpApi {
     this.webhookToken = '',
     this.webhookPassphrase = '',
     this.webDir = 'web',
+    this.telegramSources = const [],
+    this.proxyConfigPath = 'telegram_proxy.json',
   });
 
   final String host;
@@ -36,6 +39,8 @@ class HttpApi {
   final String webhookToken;
   final String webhookPassphrase;
   final String webDir;
+  final List<TelegramSource> telegramSources;
+  final String proxyConfigPath;
 
   HttpServer? _server;
   final _router = Router();
@@ -97,6 +102,78 @@ class HttpApi {
       try {
         final account = await pipeline.executor.account();
         return _json({'ok': true, 'equity': account.equity});
+      } catch (e) {
+        return _json({'ok': false, 'error': '$e'});
+      }
+    });
+
+    // Telegram proxy settings (isolated config file).
+    _router.get('/telegram/proxy', (Request req) {
+      if (!_authorized(req)) return Response.forbidden('unauthorized');
+      final cfg = TelegramProxyConfig.load(path: proxyConfigPath);
+      return _json(cfg.toJson(includeSecrets: false));
+    });
+
+    _router.post('/telegram/proxy', (Request req) async {
+      if (!_authorized(req)) return Response.forbidden('unauthorized');
+      try {
+        final body = jsonDecode(await req.readAsString()) as Map<String, dynamic>;
+        final cfg = TelegramProxyConfig.fromJson(body);
+        final errors = cfg.validate();
+        if (errors.isNotEmpty) {
+          return _json({'ok': false, 'errors': errors});
+        }
+        await cfg.save(path: proxyConfigPath);
+        // Reconnect only Telegram clients.
+        for (final src in telegramSources) {
+          await src.reloadProxy(cfg);
+        }
+        db.audit('info', 'telegram proxy settings updated (mode=${cfg.mode.name})');
+        return _json({'ok': true});
+      } catch (e) {
+        return _json({'ok': false, 'error': '$e'});
+      }
+    });
+
+    _router.post('/telegram/proxy/test', (Request req) async {
+      if (!_authorized(req)) return Response.forbidden('unauthorized');
+      try {
+        final cfg = TelegramProxyConfig.load(path: proxyConfigPath);
+        final errors = cfg.validate();
+        if (errors.isNotEmpty) {
+          return _json({'ok': false, 'errors': errors});
+        }
+        // Local listener reachability test.
+        bool reachable = false;
+        String? err;
+        try {
+          final socket = await Socket.connect(cfg.host, cfg.port,
+              timeout: Duration(seconds: cfg.connectTimeoutSeconds));
+          await socket.close();
+          reachable = true;
+        } catch (e) {
+          err = '$e';
+        }
+        // TDLib proxy test if client available.
+        bool tgOk = false;
+        String? tgErr;
+        for (final src in telegramSources) {
+          try {
+            tgOk = await src.client.testProxy();
+            tgErr = src.client.lastProxyError;
+          } catch (e) {
+            tgErr = '$e';
+          }
+          break;
+        }
+        return _json({
+          'ok': reachable,
+          'local_listener': reachable,
+          'local_error': err,
+          'telegram_proxy': tgOk,
+          'telegram_proxy_error': tgErr,
+          'mode': cfg.mode.name,
+        });
       } catch (e) {
         return _json({'ok': false, 'error': '$e'});
       }
