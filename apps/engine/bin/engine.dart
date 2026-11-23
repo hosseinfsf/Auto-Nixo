@@ -185,7 +185,7 @@ Future<void> _run(EngineConfig config) async {
 
   // Keep alive.
   final done = Completer<void>();
-  ProcessSignal.sigint.watch().listen((_) {
+  ProcessSignal.sigint.watch().listen((_) async {
     db.audit('info', 'engine stopping');
     watchdog.stop();
     await queueConsumer.stop();
