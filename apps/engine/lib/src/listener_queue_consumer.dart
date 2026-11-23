@@ -154,6 +154,22 @@ class ListenerQueueStore {
     return rows.isNotEmpty;
   }
 
+  /// Release an edit while an earlier version is still active.
+  /// This preserves ordering across multiple Engine workers without losing the edit.
+  void deferForEarlierVersion(int id, String owner, {int delaySeconds = 2}) {
+    _openIfReady();
+    final q = _queueDb;
+    if (q == null) return;
+    final nextAttempt = DateTime.now().toUtc()
+        .add(Duration(seconds: delaySeconds)).toIso8601String();
+    q.execute(
+      "UPDATE listener_queue SET state='pending', error='waiting_for_earlier_message_version', "
+      "lease_owner=NULL, lease_until_utc=NULL, next_attempt_utc=? "
+      "WHERE id=? AND state='processing' AND lease_owner=?",
+      [nextAttempt, id, owner],
+    );
+  }
+
   /// Mark a blocked queue item terminally, without sending it to the pipeline.
   void markSkipped(int id, String owner, String reason) {
     _openIfReady();
@@ -323,12 +339,17 @@ class ListenerQueueConsumer {
 
       final editVersion = row['edit_version'] as int? ?? 0;
       if (updateType == 'edit' &&
-          (_store.hasEarlierUnresolvedVersion(
-                numericChatId, row['message_id'] as int, editVersion,
-              ) ||
-              db.hasPriorExecutionForMessage(
-                inputId, row['message_id'].toString(), editVersion,
-              ))) {
+          _store.hasEarlierUnresolvedVersion(
+            numericChatId, row['message_id'] as int, editVersion,
+          )) {
+        _store.deferForEarlierVersion(id, _owner);
+        db.audit('info', 'Listener queue row $id deferred until its earlier message version is resolved');
+        return;
+      }
+      if (updateType == 'edit' &&
+          db.hasPriorExecutionForMessage(
+            inputId, row['message_id'].toString(), editVersion,
+          )) {
         const reason = 'manual_review: edited Telegram message cannot create a second order after an earlier version was processed or may have reached MT5';
         _store.markSkipped(id, _owner, reason);
         db.audit('error', 'Listener queue row $id blocked: $reason');
