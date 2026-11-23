@@ -313,11 +313,17 @@ async def handle_delete(conn, chat_id, message_ids, allowed_chats):
                     lease_owner=NULL, lease_until_utc=NULL
                 WHERE chat_id=? AND message_id=? AND state='pending'
             """, (chat_id, mid))
+            cur = conn.execute(
+                "SELECT COALESCE(MAX(edit_version), -1) + 1 FROM listener_queue "
+                "WHERE chat_id=? AND message_id=?",
+                (chat_id, mid),
+            )
+            delete_version = cur.fetchone()[0]
             conn.execute("""
                 INSERT OR IGNORE INTO listener_queue
                 (chat_id, message_id, edit_version, date_utc, update_type, ingested_at, state)
-                VALUES (?, ?, 0, ?, 'delete', ?, 'pending')
-            """, (chat_id, mid, now, now))
+                VALUES (?, ?, ?, ?, 'delete', ?, 'pending')
+            """, (chat_id, mid, delete_version, now, now))
             conn.commit()
             log.info("DELETE msg %s/%s ingested", chat_id, mid)
         except sqlite3.Error as e:

@@ -122,6 +122,36 @@ void main() {
     expect(second['attempts'], 2);
   });
 
+  test('edit is deferred while an earlier version is unresolved', () {
+    final seed = sqlite3.sqlite3.open(dbPath);
+    seed.execute('''
+      INSERT INTO listener_queue
+      (chat_id, message_id, edit_version, date_utc, update_type, ingested_at, state)
+      VALUES (123, 456, 1, '2026-11-23T10:00:02.000Z', 'edit',
+              '2026-11-23T10:00:02.000Z', 'pending')
+    ''');
+    seed.dispose();
+
+    final first = store.claimNext(owner: 'worker-a')!;
+    final edit = store.claimNext(owner: 'worker-b')!;
+    expect(first['edit_version'], 0);
+    expect(edit['edit_version'], 1);
+    expect(store.hasEarlierUnresolvedVersion(123, 456, 1), isTrue);
+
+    store.deferForEarlierVersion(edit['id'] as int, 'worker-b', delaySeconds: 0);
+    final verify = sqlite3.sqlite3.open(dbPath);
+    final row = verify.select(
+      "SELECT state, lease_owner, error FROM listener_queue WHERE edit_version=1",
+    ).first;
+    expect(row['state'], 'pending');
+    expect(row['lease_owner'], isNull);
+    expect(row['error'], 'waiting_for_earlier_message_version');
+    verify.dispose();
+
+    store.markProcessed(first['id'] as int, 'worker-a');
+    expect(store.hasEarlierUnresolvedVersion(123, 456, 1), isFalse);
+  });
+
   test('retry limit parks the row as failed', () {
     final row = store.claimNext(owner: 'worker-a')!;
     store.retryOrFail(
