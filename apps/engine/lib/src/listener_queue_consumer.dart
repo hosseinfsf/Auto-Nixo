@@ -118,6 +118,55 @@ class ListenerQueueStore {
     );
   }
 
+  /// A queued item is trusted only while its Listener allowlist entry exists
+  /// and remains enabled. Missing tables/columns fail closed.
+  bool isSourceEnabled(int chatId) {
+    _openIfReady();
+    final q = _queueDb;
+    if (q == null) return false;
+    try {
+      final table = q.select(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='sources' LIMIT 1",
+      );
+      if (table.isEmpty) return false;
+      final columns = q.select('PRAGMA table_info(sources)')
+          .map((row) => row['name'] as String).toSet();
+      if (!columns.containsAll({'chat_id', 'enabled'})) return false;
+      final rows = q.select(
+        'SELECT enabled FROM sources WHERE chat_id=? LIMIT 1', [chatId],
+      );
+      return rows.isNotEmpty && rows.first['enabled'] == 1;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// Older versions still pending/processing must finish before an edit.
+  bool hasEarlierUnresolvedVersion(int chatId, int messageId, int editVersion) {
+    _openIfReady();
+    final q = _queueDb;
+    if (q == null) return true;
+    final rows = q.select(
+      "SELECT 1 FROM listener_queue WHERE chat_id=? AND message_id=? "
+      "AND edit_version < ? AND state IN ('pending','processing') LIMIT 1",
+      [chatId, messageId, editVersion],
+    );
+    return rows.isNotEmpty;
+  }
+
+  /// Mark a blocked queue item terminally, without sending it to the pipeline.
+  void markSkipped(int id, String owner, String reason) {
+    _openIfReady();
+    final q = _queueDb;
+    if (q == null) return;
+    q.execute(
+      "UPDATE listener_queue SET state='failed', processed_at=?, error=?, "
+      "lease_owner=NULL, lease_until_utc=NULL, next_attempt_utc=NULL "
+      "WHERE id=? AND state='processing' AND lease_owner=?",
+      [DateTime.now().toUtc().toIso8601String(), reason, id, owner],
+    );
+  }
+
   void markProcessed(int id, String owner) {
     _openIfReady();
     final q = _queueDb;
@@ -244,7 +293,15 @@ class ListenerQueueConsumer {
         return;
       }
 
-      final chatId = row['chat_id'].toString();
+      final numericChatId = row['chat_id'] as int;
+      if (!_store.isSourceEnabled(numericChatId)) {
+        const reason = 'manual_review: Listener source is missing or disabled';
+        _store.markSkipped(id, _owner, reason);
+        db.audit('warn', 'Listener queue row $id blocked: $reason');
+        return;
+      }
+
+      final chatId = numericChatId.toString();
       final inputId = 'telegram:$chatId';
       final existing = db.listInputs().where((item) => item['id'] == inputId);
       if (existing.isEmpty) {
@@ -261,6 +318,20 @@ class ListenerQueueConsumer {
       } else if (existing.first['enabled'] != 1) {
         db.audit('info', 'Listener queue row $id ignored: input $inputId disabled');
         _store.markProcessed(id, _owner);
+        return;
+      }
+
+      final editVersion = row['edit_version'] as int? ?? 0;
+      if (updateType == 'edit' &&
+          (_store.hasEarlierUnresolvedVersion(
+                numericChatId, row['message_id'] as int, editVersion,
+              ) ||
+              db.hasPriorExecutionForMessage(
+                inputId, row['message_id'].toString(), editVersion,
+              ))) {
+        const reason = 'manual_review: edited Telegram message cannot create a second order after an earlier version was processed or may have reached MT5';
+        _store.markSkipped(id, _owner, reason);
+        db.audit('error', 'Listener queue row $id blocked: $reason');
         return;
       }
 

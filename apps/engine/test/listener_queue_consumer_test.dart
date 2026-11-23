@@ -41,6 +41,15 @@ void main() {
       )
     ''');
     seedDb.execute('''
+      CREATE TABLE sources (
+        chat_id INTEGER PRIMARY KEY,
+        title TEXT,
+        enabled INTEGER NOT NULL DEFAULT 1,
+        ttl_seconds INTEGER NOT NULL DEFAULT 180
+      )
+    ''');
+    seedDb.execute('INSERT INTO sources (chat_id, title, enabled) VALUES (123, \'test source\', 1)');
+    seedDb.execute('''
       INSERT INTO listener_queue
       (chat_id, message_id, date_utc, update_type, ingested_at, state)
       VALUES (123, 456, '2026-11-23T10:00:00.000Z', 'new',
@@ -53,6 +62,31 @@ void main() {
   tearDown(() {
     store.close();
     tempDir.deleteSync(recursive: true);
+  });
+
+  test('source allowlist rejects disabled and removed channels', () {
+    expect(store.isSourceEnabled(123), isTrue);
+    expect(store.isSourceEnabled(999), isFalse);
+
+    final update = sqlite3.sqlite3.open(dbPath);
+    update.execute('UPDATE sources SET enabled=0 WHERE chat_id=123');
+    update.dispose();
+    expect(store.isSourceEnabled(123), isFalse);
+
+    final remove = sqlite3.sqlite3.open(dbPath);
+    remove.execute('DELETE FROM sources WHERE chat_id=123');
+    remove.dispose();
+    expect(store.isSourceEnabled(123), isFalse);
+  });
+
+  test('missing source table fails closed', () {
+    final legacyPath = '${tempDir.path}${Platform.pathSeparator}legacy.db';
+    final legacy = sqlite3.sqlite3.open(legacyPath);
+    legacy.execute('CREATE TABLE listener_queue (id INTEGER PRIMARY KEY, chat_id INTEGER, message_id INTEGER, edit_version INTEGER, date_utc TEXT, text TEXT, caption TEXT, media_path TEXT, media_hash TEXT, update_type TEXT, state TEXT, error TEXT, validity_seconds INTEGER, lease_owner TEXT, lease_until_utc TEXT, attempts INTEGER, next_attempt_utc TEXT, processed_at TEXT)');
+    legacy.dispose();
+    final legacyStore = ListenerQueueStore(legacyPath);
+    expect(legacyStore.isSourceEnabled(123), isFalse);
+    legacyStore.close();
   });
 
   test('claims a pending row with a lease and increments attempts', () {
