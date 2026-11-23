@@ -154,6 +154,39 @@ void main() {
       db2.close();
     });
 
+    test('execution intent and status survive restart', () {
+      final db1 = Database.open(dbPath);
+      db1.createExecutionIntent(
+        signalId: 'sig_src1_m1_0',
+        intent: {
+          'order': {
+            'symbol': 'XAUUSD',
+            'side': 'buy',
+            'type': 'market',
+            'lots': 0.1,
+            'client_order_id': 'sig_src1_m1_0',
+          },
+          'sizing': {'lots': 0.1, 'risk_percent': 0.25},
+        },
+      );
+      db1.updateExecutionIntent(
+        'sig_src1_m1_0',
+        status: 'uncertain',
+        lastError: 'MT5 response uncertain: timeout',
+        incrementAttempts: true,
+      );
+      db1.close();
+
+      final db2 = Database.open(dbPath);
+      final intent = db2.executionIntentFor('sig_src1_m1_0');
+      db2.close();
+
+      expect(intent, isNotNull);
+      expect(intent!['status'], 'uncertain');
+      expect(intent['attempts'], 1);
+      expect(intent['intent']['order']['client_order_id'], 'sig_src1_m1_0');
+    });
+
     test('audit log persists across restart', () {
       final db1 = Database.open(dbPath);
       db1.audit('info', 'engine started');

@@ -16,7 +16,7 @@ class EngineConfig {
     this.telegramApiHash = '',
     this.brokerTimeOffsetHours = 0,
     this.validitySeconds = 180,
-    this.listenerQueueDbPath = 'listener/data/listener_queue.db',
+    this.listenerQueueDbPath = '../../listener/data/listener_queue.db',
     this.listenerQueueEnabled = true,
     this.listenerQueueAllowExecution = false,
   });
@@ -55,7 +55,7 @@ class EngineConfig {
         brokerTimeOffsetHours: map['broker_time_offset_hours'] as int? ?? 0,
         validitySeconds: map['validity_seconds'] as int? ?? 180,
         listenerQueueDbPath: map['listener_queue_db_path'] as String? ??
-            'listener/data/listener_queue.db',
+            '../../listener/data/listener_queue.db',
         listenerQueueEnabled: map['listener_queue_enabled'] as bool? ?? true,
         listenerQueueAllowExecution:
             map['listener_queue_allow_execution'] as bool? ?? false,

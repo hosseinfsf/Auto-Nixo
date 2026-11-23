@@ -433,17 +433,37 @@ string CidKey(const string cid)
    return("NX_" + IntegerToString((long)h));
 }
 
-ulong FindCid(const string cid)
+double FindCid(const string cid)
 {
    string k = CidKey(cid);
    if(GlobalVariableCheck(k))
-      return((ulong)GlobalVariableGet(k));
-   return(0);
+      return(GlobalVariableGet(k));     // >0=ticket, <0=reserved/pending, 0=free
+   return(0.0);
+}
+
+// Reserve the deterministic client id BEFORE the first broker-side effect.
+// If the terminal/EA crashes after this point, a retry is blocked rather than
+// risking a second order. An unresolved negative marker requires reconciliation.
+bool ReserveCid(const string cid)
+{
+   if(cid == "")
+      return(true);
+   string k = CidKey(cid);
+   if(!GlobalVariableCheck(k))
+   {
+      if(GlobalVariableSet(k, 0.0) == 0)
+         return(false);
+   }
+   if(!GlobalVariableSetOnCondition(k, -1.0, 0.0))
+      return(false);
+   GlobalVariablesFlush();
+   return(true);
 }
 
 void RememberCid(const string cid, const ulong ticket)
 {
-   GlobalVariableSet(CidKey(cid), (double)ticket);
+   if(GlobalVariableSet(CidKey(cid), (double)ticket) != 0)
+      GlobalVariablesFlush();
 }
 
 //+------------------------------------------------------------------+
@@ -464,6 +484,26 @@ void HandleOpen(CMsg &m, const string req)
    ulong  magic   = (ulong)StringToInteger(m.Get("MAGIC"));
    int    dev     = (int)StringToInteger(m.Get("DEVIATION"));
 
+   // Positive value = existing ticket. Negative = reserved but unresolved.
+   if(cid != "")
+   {
+      double prev = FindCid(cid);
+      if(prev > 0.0)
+      {
+         CLine d;
+         d.s = Head("OK", req);
+         d.AddI("ORDER_ID", (long)prev);
+         d.Add("DUPLICATE", "1");
+         SendLine(d.s);
+         return;
+      }
+      if(prev < 0.0)
+      {
+         SendErr(req, "client_order_id_pending");
+         return;
+      }
+   }
+
    string why = "";
    if(!TradingAllowed(why))
    {
@@ -481,20 +521,7 @@ void HandleOpen(CMsg &m, const string req)
       return;
    }
 
-   // Duplicate protection: same client order id => return the original ticket.
-   if(cid != "")
-   {
-      ulong prev = FindCid(cid);
-      if(prev > 0)
-      {
-         CLine d;
-         d.s = Head("OK", req);
-         d.AddI("ORDER_ID", (long)prev);
-         d.Add("DUPLICATE", "1");
-         SendLine(d.s);
-         return;
-      }
-   }
+
 
    if(!IsMarketOpen(symbol))
    {
@@ -626,6 +653,13 @@ void HandleOpen(CMsg &m, const string req)
       legLots[legs - 1] = NormalizeDouble(legLots[legs - 1] + rest, vd);
 
    PrepTrade(symbol, magic, dev, m.Get("FILLING"));
+
+   // Reserve before the first CTrade call; a crash leaves a safe pending marker.
+   if(cid != "" && !ReserveCid(cid))
+   {
+      SendErr(req, "client_order_id_pending");
+      return;
+   }
 
    string tickets = "";
    ulong  firstTicket = 0;
