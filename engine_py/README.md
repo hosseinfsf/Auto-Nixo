@@ -156,3 +156,31 @@ budget among its requested order count. It does not send `OPEN`, `MODIFY`,
 `CLOSE`, or any other trading command. Roulette progression still waits for
 reconciled, actual closed-trade outcomes; this stage does not fabricate wins
 or losses from acknowledgements.
+## MT5 trade-history recovery after reconnect
+
+`mt5/NixoLink.mq5` replays authoritative MT5 deal history after each successful
+socket authentication. The defaults are a 3-day overlap window and a 30-minute
+periodic catch-up; `InpHistorySyncDays` is configurable from 1 to 30 days and
+`InpHistorySyncIntervalMin=0` disables periodic catch-up (reconnect replay
+remains enabled).
+
+The EA selects recent deal activity, then loads the complete history for each
+affected position. It re-emits the same `FILL` records and emits
+`POSITION_CLOSED` only when MT5 history confirms that the position's full
+opening volume has been closed. The close event contains the aggregate
+profit + swap + commission for that position, not just the last deal's P/L.
+This reuses the existing line protocol; no new Python dependency or wire
+command is required.
+
+Python's durable event key (`login:command:deal_ticket`) makes overlapping
+replays idempotent, including after an Engine restart. A failed replay is
+retried with a 5-second backoff; the next reconnect replays the same window.
+Positions with reversal (`DEAL_ENTRY_INOUT`) or multiple distinct Nixo entry
+comments are deliberately not assigned to an intent automatically and remain
+for manual reconciliation. History older than the configured window with no
+deal activity inside that window is outside this recovery pass.
+
+This is a history-recovery path only. It does not enable live order submission;
+`dry_run=true` and `InpAllowReal=false` remain unchanged. MetaEditor compilation
+and terminal/demo verification are still required before relying on the EA
+change in a live environment.
