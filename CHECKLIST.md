@@ -21,9 +21,11 @@ an optional profile (default OFF). AI is an optional module (OFF for now).
 
 - [~] Table inputs: id, type (telegram_source | tradingview_webhook), name,
       enabled, profile_id, status, last_message_at, last_error. (`db.dart`)
-- [ ] On engine start: load settings → start MT5 link → start Telegram service
-      → start every enabled input adapter → catch-up (inside validity window) →
-      arm trading. (wiring not run)
+- [~] Python Listener runs as a separate manually controlled process; Engine
+      consumes its shared SQLite queue without auto-starting Telegram.
+- [~] Queue consumer: lease/claim/retry/processed ACK, original timestamp and
+      per-channel TTL recheck; queue execution permission defaults OFF.
+      (code written, owner-PC tests pending)
 - [ ] Each input shows live health in the UI; a dead input raises an alert and
       auto-retries.
 - [ ] Input type "telegram_source": channel/group by @username, t.me link,

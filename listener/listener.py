@@ -68,7 +68,20 @@ def init_queue(db_path: Path) -> sqlite3.Connection:
             UNIQUE(chat_id, message_id, edit_version)
         );
     """)
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_queue_state ON listener_queue(state);")
+    # Additive migrations keep existing queue rows intact.
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(listener_queue)")}
+    migrations = {
+        "validity_seconds": "INTEGER NOT NULL DEFAULT 180",
+        "lease_owner": "TEXT",
+        "lease_until_utc": "TEXT",
+        "attempts": "INTEGER NOT NULL DEFAULT 0",
+        "next_attempt_utc": "TEXT",
+        "processed_at": "TEXT",
+    }
+    for name, declaration in migrations.items():
+        if name not in columns:
+            conn.execute(f"ALTER TABLE listener_queue ADD COLUMN {name} {declaration}")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_queue_state ON listener_queue(state, id);")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_queue_chat ON listener_queue(chat_id, message_id);")
     conn.commit()
     return conn
@@ -113,14 +126,15 @@ def enqueue(conn: sqlite3.Connection, row: dict) -> bool:
         cur = conn.execute("""
             INSERT OR IGNORE INTO listener_queue
             (chat_id, message_id, edit_version, date_utc, sender_id, text,
-             caption, media_path, media_hash, content_hash, update_type, ingested_at, state)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             caption, media_path, media_hash, content_hash, update_type, ingested_at,
+             state, validity_seconds)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             row["chat_id"], row["message_id"], row["edit_version"],
             row["date_utc"], row.get("sender_id"), row.get("text"),
             row.get("caption"), row.get("media_path"), row.get("media_hash"),
             row.get("content_hash"), row["update_type"], row["ingested_at"],
-            row.get("state", "pending"),
+            row.get("state", "pending"), row.get("validity_seconds", DEFAULT_VALIDITY_SECONDS),
         ))
         conn.commit()
         return cur.rowcount > 0
@@ -233,6 +247,7 @@ def make_row(msg, update_type, media_path=None, media_hash=None, edit_version=0,
         "update_type": update_type,
         "ingested_at": datetime.now(timezone.utc).isoformat(),
         "state": state,
+        "validity_seconds": validity,
     }
 
 
@@ -293,6 +308,12 @@ async def handle_delete(conn, chat_id, message_ids, allowed_chats):
     for mid in message_ids:
         try:
             conn.execute("""
+                UPDATE listener_queue
+                SET state='deleted', error='telegram_message_deleted',
+                    lease_owner=NULL, lease_until_utc=NULL
+                WHERE chat_id=? AND message_id=? AND state='pending'
+            """, (chat_id, mid))
+            conn.execute("""
                 INSERT OR IGNORE INTO listener_queue
                 (chat_id, message_id, edit_version, date_utc, update_type, ingested_at, state)
                 VALUES (?, ?, 0, ?, 'delete', ?, 'pending')
@@ -342,6 +363,7 @@ def write_status(conn, authorized, connected, last_event_at, last_error):
             "proxy_mode": "disabled",
             "last_event_at": last_event_at,
             "queue_depth": conn.execute("SELECT COUNT(*) FROM listener_queue WHERE state='pending'").fetchone()[0],
+            "queue_processing": conn.execute("SELECT COUNT(*) FROM listener_queue WHERE state='processing'").fetchone()[0],
             "last_error": last_error,
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }

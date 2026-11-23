@@ -53,6 +53,7 @@ if not LISTENER_API_TOKEN:
 def get_db():
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(DB_PATH))
+    conn.execute("PRAGMA busy_timeout=5000;")
     conn.row_factory = sqlite3.Row
     conn.execute("""
         CREATE TABLE IF NOT EXISTS sources (
@@ -174,15 +175,19 @@ class Handler(BaseHTTPRequestHandler):
             total = conn.execute("SELECT COUNT(*) FROM listener_queue").fetchone()[0]
             pending = conn.execute("SELECT COUNT(*) FROM listener_queue WHERE state='pending'").fetchone()[0]
             processed = conn.execute("SELECT COUNT(*) FROM listener_queue WHERE state='processed'").fetchone()[0]
+            processing = conn.execute("SELECT COUNT(*) FROM listener_queue WHERE state='processing'").fetchone()[0]
             failed = conn.execute("SELECT COUNT(*) FROM listener_queue WHERE state='failed'").fetchone()[0]
             expired = conn.execute("SELECT COUNT(*) FROM listener_queue WHERE state='expired'").fetchone()[0]
+            deleted = conn.execute("SELECT COUNT(*) FROM listener_queue WHERE state='deleted'").fetchone()[0]
             conn.close()
-            self._json({"total": total, "pending": pending, "processed": processed, "failed": failed, "expired": expired})
+            self._json({"total": total, "pending": pending, "processing": processing,
+                        "processed": processed, "failed": failed, "expired": expired,
+                        "deleted": deleted})
 
         elif path == "/api/queue/recent":
             conn = get_db()
             rows = conn.execute(
-                "SELECT chat_id, message_id, edit_version, update_type, state, date_utc FROM listener_queue ORDER BY id DESC LIMIT 20"
+                "SELECT chat_id, message_id, edit_version, update_type, state, date_utc, attempts, error FROM listener_queue ORDER BY id DESC LIMIT 20"
             ).fetchall()
             self._json({"rows": [dict(r) for r in rows]})
             conn.close()

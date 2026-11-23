@@ -14,6 +14,7 @@ import 'package:nixo_engine/src/http_api.dart';
 import 'package:nixo_engine/src/input_registry.dart';
 import 'package:nixo_engine/src/mt5/link_server.dart';
 import 'package:nixo_engine/src/pipeline.dart';
+import 'package:nixo_engine/src/listener_queue_consumer.dart';
 
 import 'package:nixo_engine/src/telegram/telegram_source.dart';
 import 'package:nixo_engine/src/watchdog.dart';
@@ -143,11 +144,19 @@ Future<void> _run(EngineConfig config) async {
   // Input registry.
   final registry = InputRegistry(db: db);
 
-  // Telegram is managed by the separately started Python/Telethon Listener.
-  // Do not create a second account session or auto-start TDLib here.
-  // Listener queue delivery into Pipeline is implemented in a separate phase.
+  // Telegram is read by the separately started Python/Telethon Listener.
+  // Engine only consumes its durable local SQLite queue; it never logs into Telegram.
+  // Queue messages remain Dry Run unless explicitly allowed in engine_config.json.
   final telegramSources = <TelegramSource>[];
   await registry.startAll();
+  final queueConsumer = ListenerQueueConsumer(
+    path: config.listenerQueueDbPath,
+    enabled: config.listenerQueueEnabled,
+    allowExecution: config.listenerQueueAllowExecution,
+    db: db,
+    pipeline: pipeline,
+  );
+  await queueConsumer.start();
 
   // Watchdog.
   final watchdog = Watchdog(link: link, telegramSources: telegramSources);
@@ -179,9 +188,10 @@ Future<void> _run(EngineConfig config) async {
   ProcessSignal.sigint.watch().listen((_) {
     db.audit('info', 'engine stopping');
     watchdog.stop();
-    api.stop();
-    link.stop();
-    registry.stopAll();
+    await queueConsumer.stop();
+    await api.stop();
+    await link.stop();
+    await registry.stopAll();
     db.close();
     done.complete();
   });

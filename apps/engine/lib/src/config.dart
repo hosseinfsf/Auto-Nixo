@@ -16,6 +16,9 @@ class EngineConfig {
     this.telegramApiHash = '',
     this.brokerTimeOffsetHours = 0,
     this.validitySeconds = 180,
+    this.listenerQueueDbPath = 'listener/data/listener_queue.db',
+    this.listenerQueueEnabled = true,
+    this.listenerQueueAllowExecution = false,
   });
 
   final String dataDir;
@@ -28,6 +31,9 @@ class EngineConfig {
   final String telegramApiHash;
   final int brokerTimeOffsetHours;
   final int validitySeconds;
+  final String listenerQueueDbPath;
+  final bool listenerQueueEnabled;
+  final bool listenerQueueAllowExecution;
 
   String get dbPath => '$dataDir/nixo.db';
 
@@ -48,6 +54,11 @@ class EngineConfig {
         telegramApiHash: map['telegram_api_hash'] as String? ?? '',
         brokerTimeOffsetHours: map['broker_time_offset_hours'] as int? ?? 0,
         validitySeconds: map['validity_seconds'] as int? ?? 180,
+        listenerQueueDbPath: map['listener_queue_db_path'] as String? ??
+            'listener/data/listener_queue.db',
+        listenerQueueEnabled: map['listener_queue_enabled'] as bool? ?? true,
+        listenerQueueAllowExecution:
+            map['listener_queue_allow_execution'] as bool? ?? false,
       );
     } catch (_) {
       return EngineConfig();
