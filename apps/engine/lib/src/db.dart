@@ -119,6 +119,19 @@ class Database {
       );
     ''');
     _db.execute('''
+      CREATE TABLE IF NOT EXISTS execution_intents (
+        signal_id TEXT PRIMARY KEY,
+        client_order_id TEXT NOT NULL UNIQUE,
+        intent_json TEXT NOT NULL,
+        status TEXT NOT NULL,
+        order_id TEXT,
+        last_error TEXT,
+        attempts INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+    ''');
+    _db.execute('''
       CREATE TABLE IF NOT EXISTS samples (
         id TEXT PRIMARY KEY,
         input_id TEXT,
@@ -268,6 +281,55 @@ class Database {
       [
         row['id'], row['intent'], row['order_id'], row['status'],
         DateTime.now().millisecondsSinceEpoch ~/ 1000,
+      ],
+    );
+  }
+
+  /// Create an immutable, durable execution intent before contacting MT5.
+  /// INSERT OR IGNORE ensures retries retain the original order plan.
+  void createExecutionIntent({
+    required String signalId,
+    required Map<String, dynamic> intent,
+  }) {
+    final now = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+    _db.execute(
+      'INSERT OR IGNORE INTO execution_intents '
+      '(signal_id,client_order_id,intent_json,status,attempts,created_at,updated_at) '
+      'VALUES (?,?,?,?,?,?,?)',
+      [signalId, signalId, jsonEncode(intent), 'prepared', 0, now, now],
+    );
+  }
+
+  Map<String, dynamic>? executionIntentFor(String signalId) {
+    final rows = _db.select(
+      'SELECT * FROM execution_intents WHERE signal_id=? LIMIT 1',
+      [signalId],
+    );
+    if (rows.isEmpty) return null;
+    final row = Map<String, dynamic>.from(rows.first);
+    row['intent'] = jsonDecode(row['intent_json'] as String);
+    return row;
+  }
+
+  void updateExecutionIntent(
+    String signalId, {
+    required String status,
+    String? orderId,
+    String? lastError,
+    bool incrementAttempts = false,
+  }) {
+    final now = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+    _db.execute(
+      'UPDATE execution_intents SET status=?, '
+      'order_id=COALESCE(?, order_id), last_error=?, '
+      'attempts=attempts+?, updated_at=? WHERE signal_id=?',
+      [
+        status,
+        orderId,
+        lastError,
+        incrementAttempts ? 1 : 0,
+        now,
+        signalId,
       ],
     );
   }

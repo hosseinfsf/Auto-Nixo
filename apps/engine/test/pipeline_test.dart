@@ -104,6 +104,97 @@ void main() {
       expect(executor.opened, isNotEmpty);
     });
 
+    test('recovers a lost MT5 acknowledgement without opening a duplicate', () async {
+      db.setSetting('mt5_dry_run', '0');
+      executor.failOpen = true;
+      executor.failOpenError = 'timeout';
+      executor.loseAckAfterAccept = true;
+
+      final message = {
+        'input_id': 'src1',
+        'message_id': 'm-uncertain',
+        'text': 'BUY XAUUSD entry 4050 sl 4030 tp1 4080',
+        'caption': '',
+        'timestamp': DateTime.now().toUtc().toIso8601String(),
+      };
+
+      await expectLater(
+        pipeline.process(RawMessageEvent(inputId: 'src1', message: message)),
+        throwsA(isA<ExecutionPendingException>()),
+      );
+
+      final signalId = 'sig_src1_m-uncertain_0';
+      expect(db.executionIntentFor(signalId)?['status'], 'uncertain');
+      expect(db.executionIntentFor(signalId)?['attempts'], 1);
+      expect(db.decisionFor(signalId), isNull);
+      expect(executor.opened, hasLength(1));
+
+      executor.failOpen = false;
+      executor.loseAckAfterAccept = false;
+      final recovered = await pipeline.process(
+        RawMessageEvent(inputId: 'src1', message: message),
+      );
+
+      expect(recovered.action, DecisionAction.execute);
+      expect(db.executionIntentFor(signalId)?['status'], 'acked');
+      expect(db.executionIntentFor(signalId)?['order_id'], 'fake_1');
+      expect(executor.opened, hasLength(1));
+      expect(db.decisionFor(signalId)?['action'], 'execute');
+    });
+
+    test('queue-specific Dry Run gate overrides a disabled global Dry Run', () async {
+      db.setSetting('mt5_dry_run', '0');
+      final decision = await pipeline.process(RawMessageEvent(
+        inputId: 'src1',
+        message: {
+          'input_id': 'src1',
+          'message_id': 'forced-shadow',
+          'text': 'BUY XAUUSD entry 4050 sl 4030 tp1 4080',
+          'caption': '',
+          'timestamp': DateTime.now().toUtc().toIso8601String(),
+          'force_dry_run': true,
+        },
+      ));
+
+      expect(decision.action, DecisionAction.shadow);
+      expect(decision.reason, 'mt5_dry_run_enabled');
+      expect(executor.opened, isEmpty);
+      expect(db.executionIntentFor('sig_src1_forced-shadow_0'), isNull);
+    });
+
+    test('expired uncertain intent is parked for manual reconciliation', () async {
+      db.setSetting('mt5_dry_run', '0');
+      executor.failOpen = true;
+      executor.failOpenError = 'timeout';
+      executor.loseAckAfterAccept = true;
+
+      final message = {
+        'input_id': 'src1',
+        'message_id': 'm-expired-uncertain',
+        'text': 'BUY XAUUSD entry 4050 sl 4030 tp1 4080',
+        'caption': '',
+        'timestamp': DateTime.now().toUtc().toIso8601String(),
+      };
+      await expectLater(
+        pipeline.process(RawMessageEvent(inputId: 'src1', message: message)),
+        throwsA(isA<ExecutionPendingException>()),
+      );
+
+      message['timestamp'] = DateTime.now()
+          .toUtc()
+          .subtract(const Duration(seconds: 181))
+          .toIso8601String();
+      final decision = await pipeline.process(
+        RawMessageEvent(inputId: 'src1', message: message),
+      );
+
+      final signalId = 'sig_src1_m-expired-uncertain_0';
+      expect(decision.action, DecisionAction.block);
+      expect(decision.reason, contains('manual reconciliation required'));
+      expect(db.executionIntentFor(signalId)?['status'], 'manual_review');
+      expect(executor.opened, hasLength(1));
+    });
+
     test('skips noise', () async {
       final decision = await pipeline.process(RawMessageEvent(
         inputId: 'src1',

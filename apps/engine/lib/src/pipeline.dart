@@ -39,6 +39,17 @@ class ExecutionAck {
   final int? retcode;
 }
 
+/// Thrown when MT5 may have accepted an order but its acknowledgement was lost.
+/// The queue consumer retries with the same deterministic CLIENT_ORDER_ID.
+class ExecutionPendingException implements Exception {
+  ExecutionPendingException(this.signalId, this.reason);
+  final String signalId;
+  final String reason;
+
+  @override
+  String toString() => 'execution pending for $signalId: $reason';
+}
+
 class PipelineConfig {
   PipelineConfig({
     this.validitySeconds = 180,
@@ -120,6 +131,24 @@ class Pipeline {
           'duplicate (already ${prior['action']})');
     }
 
+    final existingIntent = db.executionIntentFor(signalId);
+    if (existingIntent != null) {
+      final status = existingIntent['status'] as String? ?? '';
+      if (status == 'acked') {
+        return _recoverAcknowledgedIntent(signalId, inputId, existingIntent);
+      }
+      if (status == 'rejected' || status == 'manual_review') {
+        final reason = existingIntent['last_error'] as String? ??
+            'execution intent requires manual review';
+        db.insertDecisionIfAbsent({
+          'signal_id': signalId,
+          'action': 'block',
+          'reason': reason,
+        });
+        return _decision(signalId, DecisionAction.block, reason);
+      }
+    }
+
     db.insertSignal({
       'id': signalId,
       'input_id': inputId,
@@ -137,16 +166,67 @@ class Pipeline {
         final msgTime = DateTime.parse(msgTimestamp);
         final age = DateTime.now().toUtc().difference(msgTime.toUtc()).inSeconds;
         if (age > validitySeconds) {
+          final pending = existingIntent != null &&
+              const {'prepared', 'in_flight', 'uncertain'}
+                  .contains(existingIntent['status']);
+          final reason = pending
+              ? 'signal expired after uncertain MT5 submission; manual reconciliation required'
+              : 'signal expired (${age}s > ${validitySeconds}s)';
+          if (pending) {
+            db.updateExecutionIntent(
+              signalId,
+              status: 'manual_review',
+              lastError: reason,
+            );
+            db.insertJournal({
+              'id': 'intent_$signalId',
+              'intent': existingIntent['intent_json']?.toString() ?? '{}',
+              'order_id': existingIntent['order_id'],
+              'status': 'manual_review',
+            });
+            db.audit('error', '$reason (signal=$signalId)');
+            db.insertDecision({
+              'signal_id': signalId,
+              'action': 'block',
+              'reason': reason,
+            });
+            return _decision(signalId, DecisionAction.block, reason);
+          }
           db.insertDecision({
             'signal_id': signalId,
             'action': 'skip',
-            'reason': 'signal expired (${age}s > ${validitySeconds}s)',
+            'reason': reason,
           });
-          return _decision(signalId, DecisionAction.skip,
-              'signal expired (${age}s > ${validitySeconds}s)');
+          return _decision(signalId, DecisionAction.skip, reason);
         }
       } catch (_) {
-        // Invalid timestamp — reject rather than silently treat as fresh.
+        // Invalid time is a normal skip unless an earlier submission is
+        // unresolved; that case must remain visible for manual MT5 review.
+        final pending = existingIntent != null &&
+            const {'prepared', 'in_flight', 'uncertain'}
+                .contains(existingIntent['status']);
+        if (pending) {
+          const reason =
+              'invalid source timestamp after uncertain MT5 submission; manual reconciliation required';
+          db.updateExecutionIntent(
+            signalId,
+            status: 'manual_review',
+            lastError: reason,
+          );
+          db.insertJournal({
+            'id': 'intent_$signalId',
+            'intent': existingIntent['intent_json']?.toString() ?? '{}',
+            'order_id': existingIntent['order_id'],
+            'status': 'manual_review',
+          });
+          db.audit('error', '$reason (signal=$signalId)');
+          db.insertDecision({
+            'signal_id': signalId,
+            'action': 'block',
+            'reason': reason,
+          });
+          return _decision(signalId, DecisionAction.block, reason);
+        }
         db.insertDecision({
           'signal_id': signalId,
           'action': 'skip',
@@ -154,6 +234,44 @@ class Pipeline {
         });
         return _decision(signalId, DecisionAction.skip, 'invalid timestamp');
       }
+    }
+
+    // Resume a pending intent with its original immutable order plan.
+    // Never recalculate size or prices after an uncertain MT5 response.
+    if (existingIntent != null &&
+        const {'prepared', 'in_flight', 'uncertain'}
+            .contains(existingIntent['status'])) {
+      final retryGateClosed = db.getSetting('mt5_dry_run') != '0' ||
+          msg['force_dry_run'] == true ||
+          profile?.mode != ProfileMode.auto ||
+          limits.check().blocked ||
+          !perInputLimits.canOpen(
+            inputId,
+            equity: (await executor.account()).equity,
+          );
+      if (retryGateClosed) {
+        const reason =
+            'uncertain MT5 intent paused because execution gates are closed; manual reconciliation required';
+        db.updateExecutionIntent(
+          signalId,
+          status: 'manual_review',
+          lastError: reason,
+        );
+        db.insertJournal({
+          'id': 'intent_$signalId',
+          'intent': existingIntent['intent_json']?.toString() ?? '{}',
+          'order_id': existingIntent['order_id'],
+          'status': 'manual_review',
+        });
+        db.insertDecisionIfAbsent({
+          'signal_id': signalId,
+          'action': 'block',
+          'reason': reason,
+        });
+        db.audit('error', '$reason (signal=$signalId)');
+        return _decision(signalId, DecisionAction.block, reason);
+      }
+      return _resumeExecutionIntent(signalId, inputId, existingIntent);
     }
 
     // 3. Validate.
@@ -282,8 +400,61 @@ class Pipeline {
       return _decision(signalId, DecisionAction.shadow, reason);
     }
 
-    final ack = await executor.open(order);
-    perInputLimits.onOpen(inputId);
+    // Persist the immutable plan before the OPEN command can reach the EA.
+    db.createExecutionIntent(signalId: signalId, intent: {
+      'order': order.toJson(),
+      'sizing': sizing.toJson(),
+    });
+    return _submitExecutionIntent(signalId, inputId, order, sizing.toJson());
+  }
+
+  Future<Decision> _resumeExecutionIntent(
+    String signalId,
+    String inputId,
+    Map<String, dynamic> intentRow,
+  ) async {
+    late OrderPlan order;
+    late Map<String, dynamic> sizing;
+    try {
+      final envelope = intentRow['intent'] as Map<String, dynamic>;
+      final orderJson = envelope['order'] as Map<String, dynamic>;
+      sizing = envelope['sizing'] as Map<String, dynamic>;
+      order = _orderFromJson(orderJson);
+      if (order.clientOrderId != signalId) {
+        throw StateError('stored client order id does not match signal id');
+      }
+    } catch (e) {
+      final reason = 'stored execution intent invalid; manual review required: $e';
+      db.updateExecutionIntent(signalId, status: 'manual_review', lastError: reason);
+      db.insertJournal({
+        'id': 'intent_$signalId',
+        'intent': intentRow['intent_json']?.toString() ?? '{}',
+        'order_id': intentRow['order_id'],
+        'status': 'manual_review',
+      });
+      db.insertDecisionIfAbsent({
+        'signal_id': signalId,
+        'action': 'block',
+        'reason': reason,
+      });
+      return _decision(signalId, DecisionAction.block, reason);
+    }
+    // Keep asynchronous execution errors outside the payload-decoding catch:
+    // uncertain delivery must propagate to the queue for same-ID retry.
+    return _submitExecutionIntent(signalId, inputId, order, sizing);
+  }
+
+  Future<Decision> _recoverAcknowledgedIntent(
+    String signalId,
+    String inputId,
+    Map<String, dynamic> intentRow,
+  ) async {
+    final envelope = intentRow['intent'] as Map<String, dynamic>;
+    final orderJson = envelope['order'] as Map<String, dynamic>;
+    final sizing = envelope['sizing'] as Map<String, dynamic>;
+    final order = _orderFromJson(orderJson);
+    final orderId = intentRow['order_id']?.toString();
+
     db.insertOrder({
       'id': order.clientOrderId ?? signalId,
       'signal_id': signalId,
@@ -297,36 +468,170 @@ class Pipeline {
       'tps': order.tps,
       'magic': order.magic,
       'comment': order.comment,
-      'status': ack.ok ? 'sent' : 'rejected: ${ack.error}',
+      'status': 'sent',
     });
     db.insertJournal({
-      'id': 'intent_${DateTime.now().microsecondsSinceEpoch}',
+      'id': 'intent_$signalId',
       'intent': jsonEncode(order.toJson()),
-      'order_id': ack.orderId,
-      'status': ack.ok ? 'acked' : 'failed',
+      'order_id': orderId,
+      'status': 'acked',
+    });
+    db.insertDecisionIfAbsent({
+      'signal_id': signalId,
+      'action': 'execute',
+      'reason': 'recovered acknowledged MT5 execution',
+      'sizing': jsonEncode(sizing),
+      'order_json': jsonEncode(order.toJson()),
+    });
+    perInputLimits.onOpen(inputId);
+    return _decision(
+      signalId,
+      DecisionAction.execute,
+      'recovered acknowledged MT5 execution',
+    );
+  }
+
+  Future<Decision> _submitExecutionIntent(
+    String signalId,
+    String inputId,
+    OrderPlan order,
+    Map<String, dynamic> sizing,
+  ) async {
+    db.updateExecutionIntent(
+      signalId,
+      status: 'in_flight',
+      lastError: null,
+      incrementAttempts: true,
+    );
+    db.insertJournal({
+      'id': 'intent_$signalId',
+      'intent': jsonEncode(order.toJson()),
+      'order_id': null,
+      'status': 'in_flight',
     });
 
+    ExecutionAck ack;
+    try {
+      ack = await executor.open(order);
+    } catch (e) {
+      final reason = 'MT5 response uncertain: $e';
+      db.updateExecutionIntent(signalId, status: 'uncertain', lastError: reason);
+      db.insertJournal({
+        'id': 'intent_$signalId',
+        'intent': jsonEncode(order.toJson()),
+        'order_id': null,
+        'status': 'uncertain',
+      });
+      throw ExecutionPendingException(signalId, reason);
+    }
+
     if (!ack.ok) {
+      final error = ack.error ?? 'unknown MT5 error';
+      if (_isUncertainExecutionError(error)) {
+        final reason = 'MT5 response uncertain: $error';
+        db.updateExecutionIntent(signalId, status: 'uncertain', lastError: reason);
+        db.insertJournal({
+          'id': 'intent_$signalId',
+          'intent': jsonEncode(order.toJson()),
+          'order_id': null,
+          'status': 'uncertain',
+        });
+        throw ExecutionPendingException(signalId, reason);
+      }
+
+      db.updateExecutionIntent(signalId, status: 'rejected', lastError: error);
+      db.insertJournal({
+        'id': 'intent_$signalId',
+        'intent': jsonEncode(order.toJson()),
+        'order_id': null,
+        'status': 'rejected',
+      });
       db.insertDecision({
         'signal_id': signalId,
         'action': 'block',
-        'reason': 'execute failed: ${ack.error}',
-        'sizing': jsonEncode(sizing.toJson()),
+        'reason': 'execute failed: $error',
+        'sizing': jsonEncode(sizing),
         'order_json': jsonEncode(order.toJson()),
       });
-      return _decision(signalId, DecisionAction.block, 'execute failed: ${ack.error}');
+      return _decision(signalId, DecisionAction.block, 'execute failed: $error');
     }
 
-    // Persist the execute decision so idempotency and the dashboard both see
-    // the terminal outcome of this signal.
+    // Persist ticket and acknowledged state before the final decision.
+    db.insertOrder({
+      'id': order.clientOrderId ?? signalId,
+      'signal_id': signalId,
+      'client_order_id': order.clientOrderId,
+      'symbol': order.symbol,
+      'side': order.side.name,
+      'type': order.type.name,
+      'lots': order.lots,
+      'entry': order.entry,
+      'sl': order.sl,
+      'tps': order.tps,
+      'magic': order.magic,
+      'comment': order.comment,
+      'status': 'sent',
+    });
+    db.updateExecutionIntent(
+      signalId,
+      status: 'acked',
+      orderId: ack.orderId,
+      lastError: null,
+    );
+    db.insertJournal({
+      'id': 'intent_$signalId',
+      'intent': jsonEncode(order.toJson()),
+      'order_id': ack.orderId,
+      'status': 'acked',
+    });
+    perInputLimits.onOpen(inputId);
     db.insertDecision({
       'signal_id': signalId,
       'action': 'execute',
       'reason': 'executed',
-      'sizing': jsonEncode(sizing.toJson()),
+      'sizing': jsonEncode(sizing),
       'order_json': jsonEncode(order.toJson()),
     });
     return _decision(signalId, DecisionAction.execute, 'executed');
+  }
+
+  bool _isUncertainExecutionError(String error) {
+    final normalized = error.toLowerCase();
+    return normalized.contains('timeout') ||
+        normalized.contains('not_connected') ||
+        normalized.contains('client_order_id_pending') ||
+        normalized.contains('connection_lost') ||
+        normalized.contains('socket_closed') ||
+        normalized.contains('disconnected') ||
+        normalized.contains('replaced') ||
+        normalized.contains('order_failed') ||
+        normalized.contains('response uncertain');
+  }
+
+  OrderPlan _orderFromJson(Map<String, dynamic> json) {
+    T enumValue<T extends Enum>(List<T> values, Object? name) {
+      return values.firstWhere(
+        (value) => value.name == name,
+        orElse: () => throw FormatException('invalid stored enum value: $name'),
+      );
+    }
+
+    return OrderPlan(
+      symbol: json['symbol'] as String,
+      side: enumValue(Side.values, json['side']),
+      type: enumValue(OrderType.values, json['type']),
+      lots: (json['lots'] as num).toDouble(),
+      entry: (json['entry'] as num?)?.toDouble(),
+      sl: (json['sl'] as num?)?.toDouble(),
+      tps: (json['tps'] as List? ?? [])
+          .map((value) => (value as num).toDouble())
+          .toList(),
+      magic: json['magic'] as int? ?? 0,
+      comment: json['comment'] as String? ?? '',
+      clientOrderId: json['client_order_id'] as String?,
+      deviation: json['deviation'] as int? ?? 10,
+      fillingMode: enumValue(FillingMode.values, json['filling_mode']),
+    );
   }
 
   int _magicFor(String inputId) {

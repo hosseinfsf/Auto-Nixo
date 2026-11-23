@@ -32,15 +32,30 @@ class FakeExecutor implements Executor {
   final List<OrderPlan> opened = [];
   final List<String> closed = [];
   bool failOpen = false;
+  String failOpenError = 'fake failure';
+  bool loseAckAfterAccept = false;
   bool riskPerLotUnavailable = false;
+  final Map<String, String> _acceptedOrders = {};
 
   @override
   Future<ExecutionAck> open(OrderPlan order) async {
+    final cid = order.clientOrderId;
+    if (cid != null && _acceptedOrders.containsKey(cid)) {
+      return ExecutionAck(ok: true, orderId: _acceptedOrders[cid]);
+    }
     if (failOpen) {
-      return ExecutionAck(ok: false, error: 'fake failure');
+      if (loseAckAfterAccept) {
+        opened.add(order);
+        if (cid != null) {
+          _acceptedOrders[cid] = 'fake_' + opened.length.toString();
+        }
+      }
+      return ExecutionAck(ok: false, error: failOpenError);
     }
     opened.add(order);
-    return ExecutionAck(ok: true, orderId: 'fake_${opened.length}');
+    final ticket = 'fake_' + opened.length.toString();
+    if (cid != null) _acceptedOrders[cid] = ticket;
+    return ExecutionAck(ok: true, orderId: ticket);
   }
 
   @override
