@@ -1,3 +1,4 @@
+import asyncio
 import json
 import tempfile
 import unittest
@@ -6,7 +7,8 @@ from pathlib import Path
 
 from nixo_engine.db import NixoStore
 from nixo_engine.execution import DryRunExecutionPlanner
-from nixo_engine.mt5_protocol import Mt5Message
+from nixo_engine.mt5_protocol import Mt5Message, authenticated
+from nixo_engine.server import NixoLinkServer
 from nixo_engine.signal_processor import SignalProcessor
 
 
@@ -273,6 +275,80 @@ class ExecutionPlannerTests(unittest.IsolatedAsyncioTestCase):
             count = db.execute("SELECT COUNT(*) FROM execution_intents WHERE signal_id=?",
                                (signal_id,)).fetchone()[0]
         self.assertEqual(count, 1)
+
+
+
+class NixoLinkDryRunIntegrationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_real_tcp_protocol_runs_read_only_plan_and_never_sends_open(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = NixoStore(Path(tmp) / "engine.db")
+            store.ensure_account("mt5-demo", "Demo Profile")
+            store.ensure_channel(-100123, "Gold Signals", "mt5-demo")
+            item = store.record_channel_signal(
+                chat_id=-100123, message_id=700, edit_version=0, event_type="new",
+                telegram_date_utc=None, validity_seconds=180,
+                raw_text="BUY GOLD NOW SL 2340 TP1 2360",
+            )
+            SignalProcessor(store).process_one()
+            token = "integration-test-token-123456"
+            server = NixoLinkServer("127.0.0.1", 0, token, dry_run=True)
+            await server.start()
+            commands = []
+
+            async def mock_ea():
+                reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
+                writer.write(authenticated(token).encode())
+                await writer.drain()
+                auth_reply = Mt5Message.decode(await asyncio.wait_for(reader.readline(), 2))
+                if auth_reply.command != "AUTH_OK":
+                    raise AssertionError("NixoLink authentication failed")
+                writer.write(Mt5Message({
+                    "CMD": "ACCOUNT", "LOGIN": "123", "EQUITY": "10000",
+                    "BALANCE": "10000", "TRADE_MODE": "demo",
+                }).encode())
+                await writer.drain()
+                try:
+                    for _ in range(3):
+                        request = Mt5Message.decode(await asyncio.wait_for(reader.readline(), 2))
+                        commands.append(request.command)
+                        req_id = request.fields["REQ_ID"]
+                        if request.command == "GET_ACCOUNT":
+                            response = {"CMD": "ACCOUNT", "REQ_ID": req_id, "LOGIN": "123",
+                                        "EQUITY": "10000", "BALANCE": "10000",
+                                        "TRADE_MODE": "demo"}
+                        elif request.command == "GET_SYMBOL_INFO":
+                            response = {"CMD": "SYMBOL_INFO", "REQ_ID": req_id,
+                                         "SYMBOL": "XAUUSD", "BID": "2349.9", "ASK": "2350.1",
+                                         "MARKET_OPEN": "1", "TICK_AGE": "1",
+                                         "VOL_MIN": "0.01", "VOL_MAX": "100", "VOL_STEP": "0.01"}
+                        elif request.command == "GET_RISK_PER_LOT":
+                            response = {"CMD": "OK", "REQ_ID": req_id, "RISK_PER_LOT": "100"}
+                        else:
+                            raise AssertionError(f"unexpected command: {request.command}")
+                        writer.write(Mt5Message(response).encode())
+                        await writer.drain()
+                finally:
+                    writer.close()
+                    await writer.wait_closed()
+
+            ea_task = asyncio.create_task(mock_ea())
+            try:
+                for _ in range(100):
+                    if server.connections:
+                        break
+                    await asyncio.sleep(0.01)
+                planner = DryRunExecutionPlanner(store, server)
+                result = await planner.process_signal(item["signal_id"])
+                await asyncio.wait_for(ea_task, 3)
+                self.assertEqual(result["state"], "dry_run")
+                self.assertEqual(commands, ["GET_ACCOUNT", "GET_SYMBOL_INFO", "GET_RISK_PER_LOT"])
+                self.assertNotIn("OPEN", commands)
+                self.assertTrue(server.dry_run)
+            finally:
+                if not ea_task.done():
+                    ea_task.cancel()
+                    await asyncio.gather(ea_task, return_exceptions=True)
+                await server.stop()
 
 
 if __name__ == "__main__":
