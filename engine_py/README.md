@@ -9,7 +9,7 @@ Telegram Listener or the MQL5 EA.
 - Telegram-account roulette configuration defaults to enabled.
 - Roulette follows the documented legacy volume model: 0.50% base risk,
   3.0% equity-growth activation trigger, 5.0% risk cap, 50 steps, and a
-  2.0x volume factor. The step changes only after a completed trade batch:
+  2.0x volume factor. Order roulette remains opt-in; its count starts at 1\n  and is capped by `max_order_count` (default 8). The step changes only after\n  a completed trade batch:
   win +1, loss -1, flat unchanged.
 - Enabled means configured/on; the growth trigger still controls when the
   progressive volume multiplier activates.

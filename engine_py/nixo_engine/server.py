@@ -40,8 +40,8 @@ class NixoLinkServer:
             raise ValueError("NixoLink server must bind to loopback")
         if not token or len(token) < 16:
             raise ValueError("api_token must contain at least 16 characters")
-        if not 0 < int(port) < 65536:
-            raise ValueError("port must be between 1 and 65535 (use 0 only in tests)")
+        if not 0 <= int(port) < 65536:
+            raise ValueError("port must be between 0 and 65535")
         if auth_timeout <= 0:
             raise ValueError("auth_timeout must be positive")
         self.host, self.port, self.token = host, int(port), token
