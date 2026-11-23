@@ -6,7 +6,7 @@ Telegram Listener or the MQL5 EA.
 
 ## Safety defaults
 
-- Telegram-account roulette configuration defaults to enabled.
+- Telegram channel roulette configuration defaults to enabled; each channel owns an independent state.
 - Roulette follows the documented legacy volume model: 0.50% base risk,
   3.0% equity-growth activation trigger, 5.0% risk cap, 50 steps, and a
   2.0x volume factor. Order roulette remains opt-in; its count starts at 1\n  and is capped by `max_order_count` (default 8). The step changes only after\n  a completed trade batch:
@@ -50,7 +50,7 @@ The test suite uses only the Python standard library.
 - The existing Listener pins Telethon 1.46.0 for Telegram User Account / MTProto; keep one session implementation rather than adding a second client stack. Pyrogram is archived and is not selected.
 - The asyncio TCP server and mock-EA test approach were reviewed against the MIT-licensed https://github.com/RAo797bit/mt5-multi-terminal-manager. Its JSON wire protocol and EA are incompatible with NixoLink, so Nixo uses its own KEY=VALUE protocol implementation.
 - Telegram-to-MT5 projects were audited for parser/test ideas. No source is copied from projects without a declared license or where parser behavior silently defaults missing trade direction/levels.
-- The server authenticates NixoLink, tracks ACCOUNT snapshots, correlates REQ_ID replies, and blocks OPEN while dry_run=true. It does not yet consume Listener signals or execute trades.
+- The server authenticates NixoLink, tracks ACCOUNT snapshots, correlates REQ_ID replies, and blocks OPEN while dry_run=true. The separate Listener queue consumer now persists raw channel events into the Engine inbox; parsing and trade execution remain unwired.
 
 ## Telegram Listener queue handoff (raw inbox only)
 
