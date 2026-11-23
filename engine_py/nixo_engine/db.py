@@ -29,9 +29,6 @@ class NixoStore:
         try:
             conn.execute("BEGIN IMMEDIATE")
             yield conn
-            if current < 5:
-                conn.execute("CREATE INDEX idx_intents_signal ON execution_intents(signal_id)")
-                conn.execute("INSERT INTO schema_migrations(version) VALUES (5)")
             conn.commit()
         except Exception:
             conn.rollback()
@@ -140,6 +137,9 @@ class NixoStore:
                 )""")
                 conn.execute("CREATE INDEX idx_signals_processing ON signals(status, signal_id)")
                 conn.execute("INSERT INTO schema_migrations(version) VALUES (4)")
+            if current < 5:
+                conn.execute("CREATE INDEX idx_intents_signal ON execution_intents(signal_id)")
+                conn.execute("INSERT INTO schema_migrations(version) VALUES (5)")
             conn.commit()
         except Exception:
             conn.rollback()
