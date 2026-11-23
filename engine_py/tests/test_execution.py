@@ -98,6 +98,10 @@ class ExecutionPlannerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(buy["state"], "dry_run")
         buy_plan = json.loads(self.intent(buy_id)["plan_json"])
         self.assertEqual(buy_plan["entry"], 2350.1)
+        self.assertEqual(buy_plan["tp"], 2380.4)
+        self.assertEqual(buy_plan["tps"], [2380.4])
+        self.assertEqual(buy_plan["risk_reward_ratio"], 3.0)
+        self.assertEqual(buy_plan["take_profit_count_per_position"], 1)
 
         sell_id = self.add_signal(message=21, text="SELL GOLD NOW SL 2360 TP1 2340")
         self.parse(sell_id)
@@ -105,6 +109,8 @@ class ExecutionPlannerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sell["state"], "dry_run")
         sell_plan = json.loads(self.intent(sell_id)["plan_json"])
         self.assertEqual(sell_plan["entry"], 2349.9)
+        self.assertEqual(sell_plan["tp"], 2319.6)
+        self.assertEqual(sell_plan["tps"], [2319.6])
 
     async def test_roulette_state_is_independent_per_channel(self):
         self.store.ensure_channel(-100222, "Forex Signals", "mt5-demo",

@@ -172,7 +172,7 @@ class NixoLinkServer:
     async def send_open(self, login: int, fields: dict):
         if self.dry_run:
             raise PermissionError("Live trading disabled; dry_run=true")
-        required = {"SYMBOL", "SIDE", "TYPE", "LOTS", "SL", "CLIENT_ORDER_ID"}
+        required = {"SYMBOL", "SIDE", "TYPE", "LOTS", "SL", "TP", "CLIENT_ORDER_ID"}
         missing = required - fields.keys()
         if missing:
             raise ValueError("missing OPEN fields: " + ", ".join(sorted(missing)))
@@ -186,12 +186,24 @@ class NixoLinkServer:
             lots = float(fields["LOTS"])
             sl = float(fields["SL"])
             entry = float(fields.get("ENTRY", 0) or 0)
+            tp = float(fields["TP"])
         except (TypeError, ValueError) as exc:
             raise ValueError("LOTS, ENTRY and SL must be numeric") from exc
-        if not all(math.isfinite(x) for x in (lots, sl, entry)) or lots <= 0 or sl <= 0:
-            raise ValueError("LOTS and SL must be finite positive numbers")
+        if not all(math.isfinite(x) for x in (lots, sl, entry, tp)) or lots <= 0 or sl <= 0 or tp <= 0:
+            raise ValueError("LOTS, SL and TP must be finite positive numbers")
+        if entry > 0:
+            if ((side == "buy" and (sl >= entry or tp <= entry)) or
+                    (side == "sell" and (sl <= entry or tp >= entry))):
+                raise ValueError("SL/TP geometry is invalid")
+            if not math.isclose(abs(tp-entry), 3.0*abs(entry-sl), rel_tol=1e-6, abs_tol=1e-8):
+                raise ValueError("TP must be exactly 3R from ENTRY")
         if order_type != "market" and entry <= 0:
             raise ValueError("pending orders require a positive ENTRY")
         if not str(fields["SYMBOL"]).strip() or not str(fields["CLIENT_ORDER_ID"]).strip():
             raise ValueError("SYMBOL and CLIENT_ORDER_ID are required")
-        return await self.request(login, "OPEN", fields)
+        if entry > 0 and not math.isclose(abs(tp-entry), 3.0*abs(entry-sl), rel_tol=1e-6, abs_tol=1e-8):
+            raise ValueError("TP must be exactly 3R from ENTRY")
+        outgoing = dict(fields)
+        outgoing.pop("TP", None)
+        outgoing["TPS"] = str(tp)
+        return await self.request(login, "OPEN", outgoing)

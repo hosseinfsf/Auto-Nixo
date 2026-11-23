@@ -566,8 +566,11 @@ void HandleOpen(CMsg &m, const string req)
 
    double tps[];
    ParseList(m.Get("TPS"), tps);
-   if(IsNetting() && ArraySize(tps) > 1)
-      ArrayResize(tps, 1);                  // netting merges legs: keep TP1 only
+   if(ArraySize(tps) != 1)
+   {
+      SendErr(req, "exactly_one_tp_required");
+      return;
+   }
 
    bool isBuy   = (side == "buy");
    bool market  = (otype == "market" || otype == "");
@@ -606,6 +609,13 @@ void HandleOpen(CMsg &m, const string req)
       SendErr(req, "bad_sl_geometry");
       return;
    }
+   double riskDistance = MathAbs(ref - sl);
+   double rewardDistance = MathAbs(tps[0] - ref);
+   if(MathAbs(rewardDistance - 3.0 * riskDistance) > MathMax(point * 1.1, riskDistance * 0.000001))
+   {
+      SendErr(req, "tp_must_be_exactly_3r");
+      return;
+   }
    if(MathAbs(ref - sl) < minDist)
    {
       SendErr(req, "sl_too_close");
@@ -639,8 +649,8 @@ void HandleOpen(CMsg &m, const string req)
       return;
    }
 
-   // Legs: one position per TP, lots split equally (fewer legs if lots are too small).
-   int legs = MathMax(1, ArraySize(tps));
+   // Exactly one position and one TP per Nixo order.
+   int legs = 1;
    while(legs > 1 && FloorToStep(lots / legs, step) < minLot - 1e-12)
       legs--;
    double per = FloorToStep(lots / legs, step);

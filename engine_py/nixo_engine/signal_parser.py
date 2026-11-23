@@ -119,8 +119,7 @@ def parse_signal(text: str) -> TradeSignal:
     stop_loss = _number(sl_matches[0].group(1))
 
     tp_matches = list(_TP_PATTERN.finditer(clean))
-    if not tp_matches:
-        raise SignalParseError("missing_tp", "at least one explicitly labelled take-profit is required")
+    # Source TP is optional; Nixo derives exactly one 3R target from entry and SL.
     take_profits = tuple(_number(m.group(1)) for m in tp_matches)
     if len(set(take_profits)) != len(take_profits):
         raise SignalParseError("duplicate_tp", "duplicate take-profit values are not accepted")
@@ -153,11 +152,7 @@ def parse_signal(text: str) -> TradeSignal:
             raise SignalParseError("sl_wrong_side", "BUY stop-loss must be below entry")
         if side == "sell" and stop_loss <= reference:
             raise SignalParseError("sl_wrong_side", "SELL stop-loss must be above entry")
-        if side == "buy" and any(tp <= reference for tp in take_profits):
-            raise SignalParseError("tp_wrong_side", "BUY take-profits must be above entry")
-        if side == "sell" and any(tp >= reference for tp in take_profits):
-            raise SignalParseError("tp_wrong_side", "SELL take-profits must be below entry")
-
+    # Parsed source targets are retained for audit but are not execution targets.
     ordered = tuple(sorted(take_profits, reverse=(side == "sell")))
     return TradeSignal(
         side=side, symbol=symbol, entry_low=entry_low, entry_high=entry_high,

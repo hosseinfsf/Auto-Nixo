@@ -203,15 +203,21 @@ class DryRunExecutionPlanner:
                         raise ExecutionReview("sell_stop_must_be_below_bid")
 
             sl = _number({"SL": parsed.get("stop_loss")}, "SL", minimum=0.0000001)
-            tps = [float(x) for x in parsed.get("take_profits", [])]
-            if not tps or not all(math.isfinite(x) and x > 0 for x in tps):
-                raise ExecutionReview("missing_or_invalid_take_profits")
+            # Exactly one engine-derived TP at a fixed 3R reward:risk ratio.
+            # Provider TP levels remain in parsed_json for audit, never execution.
             if side == "buy":
-                if sl >= entry or any(tp <= entry for tp in tps):
-                    raise ExecutionReview("sl_or_tp_on_wrong_side")
+                if sl >= entry:
+                    raise ExecutionReview("sl_on_wrong_side")
+                raw_tp = entry + 3.0 * (entry - sl)
             else:
-                if sl <= entry or any(tp >= entry for tp in tps):
-                    raise ExecutionReview("sl_or_tp_on_wrong_side")
+                if sl <= entry:
+                    raise ExecutionReview("sl_on_wrong_side")
+                raw_tp = entry - 3.0 * (sl - entry)
+            digits = int(_number(info, "DIGITS", minimum=0))
+            tp = round(raw_tp, digits)
+            if not math.isfinite(tp) or tp <= 0 or (side == "buy" and tp <= entry) or (side == "sell" and tp >= entry):
+                raise ExecutionReview("invalid_derived_3r_take_profit")
+            tps = [tp]
 
             risk_reply = await self._request(login, "GET_RISK_PER_LOT", {
                 "SYMBOL": symbol, "SIDE": side, "ENTRY": entry, "SL": sl,
@@ -259,7 +265,8 @@ class DryRunExecutionPlanner:
                 "telegram_message_id": int(context["source_message_id"]),
                 "edit_version": int(context["edit_version"]),
                 "symbol": symbol, "side": side, "order_type": order_type,
-                "entry": entry, "sl": sl, "tps": tps,
+                "entry": entry, "sl": sl, "tp": tp, "tps": tps,
+                "risk_reward_ratio": 3.0, "take_profit_count_per_position": 1,
                 "equity": equity, "risk_pct": risk_pct,
                 "risk_budget": risk_budget, "risk_per_lot": risk_per_lot,
                 "planned_risk": planned_risk, "roulette_step": roulette.state.step,
