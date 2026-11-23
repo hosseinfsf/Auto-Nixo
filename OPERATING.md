@@ -25,7 +25,10 @@ Then edit `engine_config.json`:
 | `telegram_api_id` / `telegram_api_hash` | From https://my.telegram.org → API development tools |
 | `mt5_port` | 9123 unless you change the EA |
 | `api_port` | 9124 unless occupied |
-| `validity_seconds` | Signal max age (default 300) |
+| `validity_seconds` | Global fallback signal max age (default 180 seconds) |
+| `listener_queue_db_path` | Shared Listener SQLite queue (default `listener/data/listener_queue.db`) |
+| `listener_queue_enabled` | Enable Engine queue consumer (default true) |
+| `listener_queue_allow_execution` | Permit queue signals to pass the queue-specific Dry Run gate (default false) |
 
 Set the same token for the BAT helpers:
 
@@ -72,7 +75,7 @@ Dashboard → **Roulette** / profile mode:
 | `auto` | Send to MT5 |
 | `off` | Ignore the signal |
 
-Also keep `mt5_dry_run=1` in settings until the first live demo.
+Also keep `mt5_dry_run=1` in settings until the first live demo. Telegram queue messages have an additional fail-closed gate: `listener_queue_allow_execution` defaults to `false`, so they remain in Dry Run even if the global setting is changed. Do not enable it during initial integration testing.
 
 ## 5. Demo execution test
 
@@ -90,6 +93,24 @@ Then run the automated demo suite (no real orders):
 ```sh
 cd apps/engine && dart test test/demo_integration_test.dart
 ```
+
+## 5.1 Telegram Listener queue
+
+The Python Listener remains a separate, manually started process. Start it from
+the Management Panel only when you are ready to read the allowlisted channels.
+The Engine does not start a Telegram session; it polls the shared
+`listener/data/listener_queue.db` and routes queued text/captions into Pipeline.
+
+Each queued message carries its original Telegram timestamp and the channel's
+configured validity window. The Engine checks expiry again immediately before
+signal validation. Queue claims use a time-limited lease and retry metadata so
+a stopped Engine can recover unacknowledged rows after restart. A message is
+marked processed only after Pipeline returns a terminal decision.
+
+Queue execution is doubly gated: `listener_queue_allow_execution` must be
+explicitly set to `true`, and the existing MT5 Dry Run and per-input mode
+controls still apply. Keep it `false` during validation. This integration
+does not start Listener automatically and does not perform Telegram login.
 
 ## 6. Stop / restart
 

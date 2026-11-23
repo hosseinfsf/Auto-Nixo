@@ -128,7 +128,9 @@ class Pipeline {
     });
 
     // 2b. Signal expiry check (per-source configurable, default 180s).
-    final validitySeconds = profile?.validitySeconds ?? config.validitySeconds;
+    final validitySeconds = msg['validity_seconds'] as int? ??
+        profile?.validitySeconds ??
+        config.validitySeconds;
     final msgTimestamp = msg['timestamp'] as String?;
     if (msgTimestamp != null) {
       try {
@@ -264,7 +266,8 @@ class Pipeline {
 
     // 6. Execute only when Dry Run has been explicitly disabled.
     // Missing, malformed or enabled settings all fail closed.
-    final dryRunEnabled = db.getSetting('mt5_dry_run') != '0';
+    final dryRunEnabled = db.getSetting('mt5_dry_run') != '0' ||
+        msg['force_dry_run'] == true;
     if (dryRunEnabled || mode == ProfileMode.shadow || mode == ProfileMode.confirm) {
       final reason = dryRunEnabled
           ? 'mt5_dry_run_enabled'
