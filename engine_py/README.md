@@ -51,3 +51,25 @@ The test suite uses only the Python standard library.
 - The asyncio TCP server and mock-EA test approach were reviewed against the MIT-licensed https://github.com/RAo797bit/mt5-multi-terminal-manager. Its JSON wire protocol and EA are incompatible with NixoLink, so Nixo uses its own KEY=VALUE protocol implementation.
 - Telegram-to-MT5 projects were audited for parser/test ideas. No source is copied from projects without a declared license or where parser behavior silently defaults missing trade direction/levels.
 - The server authenticates NixoLink, tracks ACCOUNT snapshots, correlates REQ_ID replies, and blocks OPEN while dry_run=true. It does not yet consume Listener signals or execute trades.
+
+## Telegram Listener queue handoff (raw inbox only)
+
+The Listener and Engine use separate SQLite files. Run the consumer as a
+separate Python process after configuring each Telegram `chat_id` in the
+Engine database and mapping it to an existing MT5 profile:
+
+```powershell
+py -3 -m nixo_engine.listener_consumer --queue-db ..\listener\data\listener_queue.db --engine-db .\data\nixo_engine.db
+```
+
+The worker claims queue rows with a lease, checks each row's per-channel
+`validity_seconds` (default 180), and persists the event using the composite
+`(chat_id, message_id, edit_version)` key. It acknowledges the Listener row
+only after the Engine insert is durable. A crash between the Engine commit
+and queue acknowledgement is recovered as an idempotent duplicate. Temporary
+database failures are retried with bounded exponential backoff.
+
+`new`, `edit`, and `delete` are stored as distinct raw inbox event types.
+This worker does not parse trade instructions, create execution intents, alter
+roulette steps, contact NixoLink, or place orders. Unknown/disabled channel
+mappings are marked ignored; expired messages are marked expired.
