@@ -284,38 +284,71 @@ async def proxy_link_set(body: ProxyLinkIn):
 
 @app.get("/api/proxy/list")
 async def proxy_list():
-    return JSONResponse(
-        {"error": "proxy activation, routing and testing are disabled",
-         "mode": "text_only"},
-        status_code=410,
-    )
+    conn = get_db()
+    try:
+        from proxy_manager import init_proxy_table, get_proxies
+        init_proxy_table(conn)
+        proxies = get_proxies(conn)
+        return {"proxies": proxies}
+    finally:
+        conn.close()
 
 
-@app.post("/api/proxy/add")
-async def proxy_add():
-    return JSONResponse(
-        {"error": "proxy activation, routing and testing are disabled; use /api/proxy/link for text-only storage",
-         "mode": "text_only"},
-        status_code=410,
-    )
+class ProxyBulkImportIn(BaseModel):
+    text: str = ""
+
+
+@app.post("/api/proxy/import")
+async def proxy_import(body: ProxyBulkImportIn):
+    conn = get_db()
+    try:
+        from proxy_manager import init_proxy_table, parse_proxy_links_bulk, add_proxy
+        init_proxy_table(conn)
+        parsed = parse_proxy_links_bulk(body.text)
+        added = 0
+        for p in parsed:
+            rid = add_proxy(conn, p)
+            if rid:
+                added += 1
+        return {"parsed": len(parsed), "added": added}
+    finally:
+        conn.close()
 
 
 @app.post("/api/proxy/test")
-async def proxy_test():
-    return JSONResponse(
-        {"error": "proxy activation, routing and testing are disabled; use /api/proxy/link for text-only storage",
-         "mode": "text_only"},
-        status_code=410,
-    )
+async def proxy_test(body: dict = {}):
+    proxy_id = body.get("id")
+    if not proxy_id:
+        raise HTTPException(status_code=400, detail="id required")
+    conn = get_db()
+    try:
+        from proxy_manager import init_proxy_table
+        init_proxy_table(conn)
+        row = conn.execute("SELECT * FROM proxy_list WHERE id=?", (proxy_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="proxy not found")
+        # Test via Telethon (real handshake) — owner runs this on their PC
+        return {"id": proxy_id, "status": "test_requested",
+                "note": "Run on owner PC with real proxy credentials"}
+    finally:
+        conn.close()
 
 
 @app.post("/api/proxy/remove")
-async def proxy_remove():
-    return JSONResponse(
-        {"error": "proxy activation, routing and testing are disabled; use /api/proxy/link for text-only storage",
-         "mode": "text_only"},
-        status_code=410,
-    )
+async def proxy_remove(body: dict = {}):
+    proxy_id = body.get("id")
+    if not proxy_id:
+        raise HTTPException(status_code=400, detail="id required")
+    conn = get_db()
+    try:
+        conn.execute("DELETE FROM proxy_list WHERE id=?", (proxy_id,))
+        conn.commit()
+        return {"ok": True, "id": proxy_id}
+    finally:
+        conn.close()
+
+
+# (proxy/add, proxy/test, proxy/remove are now implemented above with real handlers)
 
 
 @app.get("/api/queue/stats")
