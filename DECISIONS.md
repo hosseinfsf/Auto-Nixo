@@ -59,3 +59,24 @@ progresses.
 ## Rejected
 - MtApi (.NET + DLLs), ZeroMQ connectors (libzmq.dll), socket_mql5.dll — all
   rejected for DLL/prop-firm/security reasons.
+
+## Phase 5 — MetaTrader on-chart panel controls
+
+| Field | Decision / evidence |
+|---|---|
+| Component | Official MetaTrader 5 Standard Library Controls: `CAppDialog`, `CLabel`, `CButton`, and later `CListView` as needed. |
+| Official URL | https://www.mql5.com/en/docs/standardlibrary/controls ; https://www.mql5.com/en/docs/standardlibrary/controls/cappdialog ; https://www.mql5.com/en/docs/standardlibrary/controls/clabel |
+| SPDX license | `NOASSERTION`: the Controls library is shipped as part of MetaTrader 5; a separate SPDX license for this bundled component was not independently verified. Do not copy/re-distribute its source. |
+| Latest release + date | No independently versioned package/release identified. The usable version is the copy bundled with the owner's installed MetaTrader 5 terminal; terminal build not yet supplied. |
+| Last commit date | Not applicable / not independently verifiable: no public source repository or commit history for the bundled Controls library was established. |
+| CI / test status | Official documentation publishes the `Examples\\Controls` Expert Advisor sample. No separate public CI result was established. Local MetaEditor compile is pending. |
+| Windows support | Yes, through the Windows MetaTrader 5 terminal and MetaEditor installation. |
+| Install size | No separate package; included in the MetaTrader 5 installation. Incremental install size: 0 additional package bytes. |
+| Pin + hash | Pin to the Standard Library snapshot bundled with the owner's MT5 terminal build. Exact terminal build and local include-file hash are pending owner evidence; no hash is invented. |
+| Planned upstream API | `CAppDialog.Create/Run/ChartEvent/Destroy`; `CLabel.Create/Text/Color/Font/FontSize`; use other official controls only when their panel task is implemented. |
+
+**Adoption gate:** use the installed official Controls library and follow MetaQuotes' shipped
+`MQL5\\Experts\\Examples\\Controls` example. This is a platform-bundled dependency,
+not copied third-party source. Before the first compile claim, the owner must provide
+the MetaTrader terminal build and the actual MetaEditor compile log. The initial panel
+increment is read-only; it must not send or modify trading commands.
