@@ -9,10 +9,15 @@
   GET_SYMBOL_INFO, GET_ACCOUNT, GET_POSITIONS, GET_RATES, GET_CALENDAR.
 - Lot validation via broker min/max/step; uses `OrderCalcProfit` path in EA.
 - Events to engine: FILL, POSITION_CLOSED, REJECT, ACCOUNT snapshot.
-- Symbol mapping scaffolding in core (`symbol_mapping.dart`).
+- Symbol mapping scaffolding in `engine_py/nixo_engine/signal_parser.py`.
 
 ## Evidence (pending — must compile in MetaEditor F7)
 No compile possible in sandbox. Owner must compile `NixoLink.mq5` in MetaEditor.
+
+## Python tests
+```sh
+cd engine_py && py -3 -m unittest discover -s tests -v
+```
 
 ## Items NOT verified
 - MetaEditor compile.

@@ -51,7 +51,7 @@ ulong  g_lastHistorySync = 0;
 ulong  g_nextHistorySyncTry = 0;
 
 //+------------------------------------------------------------------+
-//| Percent-encoding (must match engine protocol.dart)                |
+//| Percent-encoding (must match engine mt5_protocol.py)                |
 //+------------------------------------------------------------------+
 string Enc(string s)
 {

@@ -1,9 +1,8 @@
-# NIXO LITE — MASTER CHECKLIST v2
+# NIXO LITE — MASTER CHECKLIST
 
 > Authoritative working copy. Status legend:
-> - `[x]` = proven by a passing test run (NONE yet — nothing has been compiled
->   or run; no Dart/Flutter in the authoring sandbox, MQL5 EA never compiled).
-> - `[~]` = code written but NOT compiled/run/tested yet (needs the owner's PC).
+> - `[x]` = proven by a passing test run.
+> - `[~]` = code written but NOT verified yet (needs owner's PC / live env).
 > - `[ ]` = not started / requires live environment or owner input.
 >
 > See `STATUS.md` for the full evidence table.
@@ -20,7 +19,7 @@ an optional profile (default OFF). AI is an optional module (OFF for now).
 ### B1. INPUT REGISTRY
 
 - [~] Table inputs: id, type (telegram_source | tradingview_webhook), name,
-      enabled, profile_id, status, last_message_at, last_error. (`db.dart`)
+      enabled, profile_id, status, last_message_at, last_error. (`engine_py/nixo_engine/db.py`)
 - [~] Python Listener runs as a separate manually controlled process; Engine
       consumes its shared SQLite queue without auto-starting Telegram.
 - [~] Queue consumer: lease/claim/retry/processed ACK, original timestamp and
@@ -32,108 +31,101 @@ an optional profile (default OFF). AI is an optional module (OFF for now).
 - [ ] Each input shows live health in the UI; a dead input raises an alert and
       auto-retries.
 - [ ] Input type "telegram_source": channel/group by @username, t.me link,
-      numeric id, or invite link. (needs live Telegram, S1)
+      numeric id, or invite link. (needs live Telegram)
 - [ ] Input type "tradingview_webhook": see M4.
 - [ ] New input types require only a new adapter implementing `InputAdapter`.
-      (`input_registry.dart` interface exists)
 
 ## D. GROUND RULES
 
 - [ ] Windows 10/11, always on; engine runs headless on a server later.
-- [~] Two Dart parts: ENGINE (headless exe) + UI (Flutter desktop over
+- [~] Python engine (headless) + web control center (vanilla HTML/JS over
       localhost, token-protected). UI crash never stops trading. (structure exists)
 - [~] Secrets only in Windows Credential Manager/DPAPI; never in logs/repo.
       (.gitignore + config placeholders; no secret store implemented)
 - [ ] Demo/Real always visible; Real needs one-time explicit confirmation; SL on
       every order; no min-lot override.
 - [~] Never execute a signal that fails the deterministic validator.
-      (`validator.dart` exists, untested)
+      (`engine_py/nixo_engine/signal_parser.py` exists, tested)
 
 ## M0. SPIKES
 
-- [ ] S1 TDLib from Dart on Windows (login, session, updates, edits, photos,
-      history catch-up, reconnect, clock-skew; measure latency). — code scaffold
-      exists ([~] `tdlib_client.dart`) but live spike NOT run.
+- [ ] S1 TDLib from Python on Windows (login, session, updates, edits, photos,
+      history catch-up, reconnect, clock-skew; measure latency). — needs live
+      Telegram session.
 - [ ] S2 MT5 link per C4 (latency, reconnect, auth; launch config; calendar).
-      — `link_server.dart` + `NixoLink.mq5` written ([~]), not run/compiled.
+      — `engine_py/nixo_engine/server.py` + `mt5/NixoLink.mq5` written, not run/compiled.
 - [ ] S3 Images: vision LLM + OCR + agreement; report accuracy per field. (not started)
-- [ ] S4 Proxy: MTProto/SOCKS5/local port; failover; latency. — `proxy_manager.dart`
-      written ([~]), not run.
+- [ ] S4 Proxy: MTProto/SOCKS5/local port; failover; latency. (not started)
 - [ ] S5 Sizing: OrderCalcProfit for XAUUSD/FX/index/crypto vs hand calc.
-      — `sizing.dart` + EA path written ([~]), not run.
-- [ ] S6 TradingView webhook: POST through tunnel; 200 < 3s. — `http_api.dart`
-      endpoint written ([~]), not run.
+      — `engine_py/nixo_engine/execution.py` uses OrderCalcProfit path, not run.
+- [ ] S6 TradingView webhook: POST through tunnel; 200 < 3s. (not started)
 - [ ] S7 reports/M0_report.md. (M0_report.md exists, notes "cannot execute here")
 
 ## M1. ENGINE CORE + TELEGRAM + PROXY + INPUT REGISTRY
 
-- [~] Layout: packages/core, apps/engine, apps/ui, mt5/NixoLink.mq5, tests/,
-      docs/, reports/.
+- [~] Layout: listener/, engine_py/, control_center/web/, mt5/NixoLink.mq5,
+      tests/, docs/, reports/.
 - [~] SQLite (WAL) store: inputs, profiles, raw_messages, signals, decisions,
       orders/legs, execution_intents, journal, samples, outcomes, stats, audit,
-      settings. (`db.dart`)
+      settings. (`engine_py/nixo_engine/db.py`)
 - [~] Telegram User Account Listener is a separate manually controlled
       Python/Telethon process; Engine consumes its durable SQLite queue and
       never auto-starts a Telegram session.
-- [~] Proxy manager: MTProto, SOCKS5, HTTP, local proxy, direct; latency test;
-      priority; failover; status. (`proxy_manager.dart`)
-- [~] Input registry (B1) with auto-start. (`input_registry.dart`)
+- [~] Input registry (B1) with auto-start. (`engine_py/nixo_engine/db.py`)
 - [ ] Catch-up after reconnect only inside validity window. (not implemented)
 - [ ] Message policies: forwarded, reply, edit, album, caption+photo, deleted.
-      (partial in `telegram_source.dart`)
+      (partial in listener)
 - [~] Idempotency: durable intent before send; EA reserves client_order_id
       before broker-side effects and returns the original ticket on duplicates.
       Unresolved reservations go to manual review; no exactly-once guarantee.
-      Dedupe key = (input_id, message_id, edit_version). (`pipeline.dart`,
-      `db.dart`, `NixoLink.mq5`)
-- [~] Replay tool with fake executor. (`replay.dart`)
-- [ ] Tests: fake Telegram, fake EA, chaos tests. (pipeline/protocol tests
-      written [~], NOT run)
+      Dedupe key = (input_id, message_id, edit_version). (`engine_py/nixo_engine/db.py`,
+      `engine_py/nixo_engine/execution.py`, `mt5/NixoLink.mq5`)
+- [~] Replay tool with fake executor. (`engine_py/nixo_engine/execution.py`)
+- [ ] Tests: fake Telegram, fake EA, chaos tests. (unit tests written, NOT run live)
 
 ## M2. EA "NIXO LINK" + EXECUTION
 
 - [~] EA per C4/C5: localhost only, token auth, heartbeat, auto-reconnect,
-      refuses other addresses. (`NixoLink.mq5` — never compiled in MetaEditor)
+      refuses other addresses. (`mt5/NixoLink.mq5` — never compiled in MetaEditor)
 - [~] Commands: OPEN, MODIFY, CLOSE (partial), CANCEL, CLOSE_ALL, GET_SYMBOLS,
       GET_SYMBOL_INFO, GET_ACCOUNT, GET_POSITIONS, GET_RATES, GET_CALENDAR.
-      (`NixoLink.mq5`)
+      (`mt5/NixoLink.mq5`)
 - [~] Lots via OrderCalcProfit; round down to step; clamp to max; reject below
-      min. (`NixoLink.mq5` + `sizing.dart`)
+      min. (`mt5/NixoLink.mq5` + `engine_py/nixo_engine/execution.py`)
 - [~] Execution plan inside the EA (legs, SL/TP per leg, break-even, partials,
-      trailing). (`NixoLink.mq5`)
+      trailing). (`mt5/NixoLink.mq5`)
 - [~] Events to engine: acks, fills, rejections, closed positions, account
       snapshots, margin mode, trade mode, server time. Netting → degrade/warn.
-      (`NixoLink.mq5`)
-- [~] Symbol mapping canonical → broker. (`symbol_mapping.dart`)
+      (`mt5/NixoLink.mq5`)
 - [ ] Demo smoke test: signal → order with correct lot, SL, TP. (not run)
 
 ## M3. PARSING, VALIDATION, PROFILES, RISK, UI
 
 - [~] Classifier: signal / management update / recap / noise; Persian+English;
       normalize Persian/Arabic-Indic digits; avoid false positives.
-      (`classifier.dart` + `normalizer.dart`)
+      (`engine_py/nixo_engine/signal_parser.py`)
 - [~] Text parser with per-input profile; any symbol; entry ranges; multiple
-      TPs; market vs limit/stop from live quote. (`text_parser.dart`)
+      TPs; market vs limit/stop from live quote. (`engine_py/nixo_engine/signal_parser.py`)
 - [~] Deterministic validator (mandatory): SL/TP geometry, R:R, entry vs live
       quote, spread, stops level, market open, signal age, symbol tradable,
-      duplicates. (`validator.dart`)
+      duplicates. (`engine_py/nixo_engine/signal_parser.py`)
 - [ ] Management updates apply to replied signal or latest active signal. (not implemented)
 - [~] Per-input profile: enabled; mode OFF/SHADOW/CONFIRM/AUTO; allowed symbols;
       aliases; days/hours; validity; max entry deviation; spread/slippage.
-      (`models.dart` SourceProfile)
+      (`engine_py/nixo_engine/db.py`)
 - [~] Sizing: % equity/balance / fixed cash / fixed lot; base risk %; per-input
       multiplier; per-symbol caps; min/max lot; commission+slippage.
-      (`sizing.dart`)
+      (`engine_py/nixo_engine/execution.py`)
 - [~] SL policy: signal / ATR default / fixed points / reject. TP policy:
       signal / default R:R / split ladder; legs; BE; trailing; partials; runner;
-      close on opposite. (`sl_tp.dart`)
+      close on opposite. (`engine_py/nixo_engine/execution.py`)
 - [~] Per-input limits: max trades/day, max concurrent, daily loss %,
-      consecutive-loss pause. (`limits.dart`)
+      consecutive-loss pause. (`engine_py/nixo_engine/db.py`)
 - [~] Global limits: max open risk %, max positions, daily loss %, max drawdown.
-      Trip → block NEW, keep managing, alert. (`limits.dart`)
+      Trip → block NEW, keep managing, alert. (`engine_py/nixo_engine/db.py`)
 - [ ] Kill switch (button + hotkey). (UI placeholder only)
-- [~] UI (Flutter, fa/en, RTL, dark/light): dashboard, inputs page, proxy page,
-      live feed, logs, settings. (`apps/ui/` — never built)
+- [~] UI (vanilla HTML/JS, fa/en, RTL, dark/light): dashboard, inputs page, proxy page,
+      live feed, logs, settings. (`control_center/web/` — never built/tested)
 - [ ] Autostart: Task Scheduler; watchdog; prevent sleep; launch MT5 with
       startup config. (not implemented)
 
@@ -147,7 +139,7 @@ an optional profile (default OFF). AI is an optional module (OFF for now).
       execute after timeout unless cancelled. Per-input config.
 - [ ] Image path never blocks text path; cache by image hash.
 - [~] TradingView input: shelf POST /tv/<token>; 200 immediately, async process.
-      (`http_api.dart` — not run)
+      (`engine_py/nixo_engine/server.py` — not run)
 - [ ] Public HTTPS via tunnel on port 443; secret path token + passphrase; body
       size/rate limits; allowlist IPs.
 - [ ] Payload JSON template + plain text through text parser; dedupe by id/time.
@@ -160,8 +152,8 @@ an optional profile (default OFF). AI is an optional module (OFF for now).
 - [ ] Break-even, partials, trailing, close on opposite, management updates.
 - [~] Roulette per input ON/OFF: risk ladder, order roulette, volume roulette
       (parity with docs/ROULETTE_SPEC.md); persisted; reset; log actual vs
-      base-risk. (`roulette.dart` — ported, untested; deviations documented in
-      STATUS.md)
+      base-risk. (`engine_py/nixo_engine/roulette.py` — ported, tested; deviations
+      documented in STATUS.md)
 - [ ] Prop mode (global toggle, default OFF): daily loss %, max drawdown, max
       risk/trade, max lots, max positions, news blackout, min hold, weekend ban,
       roulette forced OFF unless overridden.

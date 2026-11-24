@@ -44,19 +44,7 @@ node_modules/
 *.zip
 *.tgz
 
-# Dart / Flutter
-.dart_tool/
-.packages
-pubspec.lock
-.flutter-plugins
-.flutter-plugins-dependencies
-android/
-ios/
-web/
-macos/
-linux/
-windows/flutter/ephemeral/
-*.iml
+# Editor / IDE
 .idea/
 .vscode/
 
@@ -66,6 +54,5 @@ reports/*_secrets*
 *.pdf
 
 # Secret-bearing configuration (never commit)
-apps/engine/engine_config.json
 engine_py/engine_config.json
 __pycache__/

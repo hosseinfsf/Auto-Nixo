@@ -10,17 +10,16 @@
 - Deterministic validator (geometry, R:R, entry vs quote, spread, market open).
 - Per-input profile model (`SourceProfile`), sizing, SL/TP policies, roulette,
   global + per-input limits.
-- UI (Flutter): dashboard, sources, proxy, live feed, settings, kill switch.
+- UI (vanilla HTML/JS): dashboard, sources, proxy, live feed, settings, kill switch (`control_center/web/`).
 
 ## Evidence (pending — run on PC)
-```
-cd packages/core && dart test
-cd apps/engine && dart test
+```sh
+cd engine_py && py -3 -m unittest discover -s tests -v
 ```
 
 ## Items NOT verified
 - Live quote validation (needs MT5 link).
-- UI build (`flutter run -d windows`).
+- UI build (needs a browser session).
 
 ## Next phase plan
 M4: images + TradingView webhook + sample library + AI structure.

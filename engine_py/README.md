@@ -1,7 +1,6 @@
 # Nixo Python Engine (initial foundation)
 
-This package is the Python execution engine foundation. It is intentionally
-separate from the archived Dart/Flutter application and does not modify the
+This package is the Python execution engine. It does not modify the
 Telegram Listener or the MQL5 EA.
 
 ## Safety defaults

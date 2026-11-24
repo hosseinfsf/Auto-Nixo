@@ -60,7 +60,7 @@ No errors reported by `fsck --full`.
 
 | Credential | Old value | New value | Location |
 |------------|-----------|-----------|----------|
-| Engine API token | `lbcfqUS2PGUFh6wq4TLDZoruqIuMQOeqjkZz5eeTk` | `REDACTED_ENGINE_TOKEN` (placeholder) | `apps/engine/engine_config.json` (local, not tracked) |
+| Engine API token | `lbcfqUS2PGUFh6wq4TLDZoruqIuMQOeqjkZz5eeTk` | `REDACTED_ENGINE_TOKEN` (placeholder) | `engine_py/engine_config.json` (local, not tracked) |
 | Listener API token | `kstA6Paii417YEoW64ds83SZxfIp-jYgyA7xonVMjzo` | `REDACTED_LISTENER_TOKEN` (placeholder) | `listener/.env` (local, gitignored) |
 | Telegram API ID | `38880858` | `REDACTED_TELEGRAM_API_ID` (placeholder) | `listener/.env` (local, gitignored) |
 | Telegram API hash | `4ce357ff6343f106bd9a6e4c564a3036` | `REDACTED_TELEGRAM_API_HASH` (placeholder) | `listener/.env` (local, gitignored) |
@@ -79,9 +79,8 @@ $ git ls-files apps/engine/engine_config.json
 (no output — file is no longer tracked)
 ```
 
-Local file preserved at `apps/engine/engine_config.json` (contains placeholder
-`REDACTED_ENGINE_TOKEN`). `.gitignore` updated to include:
-- `apps/engine/engine_config.json`
+The old Dart engine (and its config) was later removed entirely at the owner's
+request. `.gitignore` now includes:
 - `engine_py/engine_config.json`
 - `__pycache__/`
 
@@ -238,21 +237,21 @@ No new test files added in Phase 0.
 4. **`control_center/web/`** — untracked vanilla HTML/JS reference dashboard.
    Decision deferred to owner (keep or remove).
 5. **`archive/legacy_dart_flutter/`** — confirmed as subset of active
-   `apps/engine/lib` (active has `listener_queue_consumer.dart` which archive
-   lacks). Safe to remove, but deferred to owner approval.
+   `apps/engine/lib`. Removed at owner approval together with all Dart/Flutter
+   code.
 
 ---
 
 ## 9. Owner actions required
 
-1. Replace placeholder tokens in `apps/engine/engine_config.json`,
+1. Replace placeholder tokens in `engine_py/engine_config.json`,
    `mt5/NixoLink.mq5`, and `listener/.env` with real rotated credentials.
 2. Run `git push origin main --force` after coordinating with any other
    clone owners.
 3. Recompile `mt5/NixoLink.mq5` in MetaEditor (F7) and paste the new
    compile log here.
 4. Decide on `control_center/web/` (keep or remove).
-5. Decide on `archive/legacy_dart_flutter/` (keep or remove).
+5. `archive/legacy_dart_flutter/` removed (owner approved).
 
 ---
 
@@ -261,7 +260,7 @@ No new test files added in Phase 0.
 1. Are there other clones of `origin/main` that need to re-fetch after
    force-push?
 2. Keep or remove `control_center/web/` (untracked vanilla reference)?
-3. Keep or remove `archive/legacy_dart_flutter/` (confirmed subset)?
+3. `archive/legacy_dart_flutter/` removed (owner approved).
 
 ---
 

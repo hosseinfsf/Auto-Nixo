@@ -2,27 +2,25 @@
 
 ## Overview
 
-Two Dart parts plus one MQL5 EA:
+Python engine + Listener + one MQL5 EA:
 
 ```
-┌────────────────────┐         ┌──────────────────────────────┐
-│  apps/ui (Flutter) │  HTTP   │  apps/engine (headless exe)  │
-│  desktop UI        │◄───────►│  - Telegram (TDLib)          │
-│  fa/en, RTL        │  local  │  - Proxy manager             │
-└────────────────────┘  token  │  - Input registry            │
-                              │  - Pipeline (classify→parse→  │
-                              │    validate→risk→execute)     │
-                              │  - SQLite (WAL) journal       │
-                              │  - MT5 link (socket SERVER)   │
-                              │  - HTTP API + webhook         │
-                              └──────────────┬───────────────┘
-                                             │ socket, 127.0.0.1
-                                             │ KEY=VALUE protocol
-                              ┌──────────────▼───────────────┐
-                              │  mt5/NixoLink.mq5 (EA)       │
-                              │  socket CLIENT, no DLL       │
-                              │  CTrade, OrderCalcProfit     │
-                              └──────────────────────────────┘
+┌──────────────────────────┐   SQLite queue   ┌──────────────────────────────┐
+│ listener/ (Telethon)     │─────────────────►│ engine_py/nixo_engine/       │
+│ Telegram User Account    │                  │ - queue consumer             │
+│ manually started/stopped │                  │ - strict parser + validator  │
+└──────────────────────────┘                  │ - roulette + risk planner    │
+                                             │ - SQLite (WAL) journal       │
+┌──────────────────────────┐   HTTP 127.0.0.1 │ - MT5 link (socket SERVER)   │
+│ control_center/web/      │◄────────────────►│ - local HTTP API             │
+│ vanilla dashboard        │     token        └──────────────┬───────────────┘
+└──────────────────────────┘                                 │ socket, 127.0.0.1
+                                                            │ KEY=VALUE protocol
+                                             ┌──────────────▼───────────────┐
+                                             │  mt5/NixoLink.mq5 (EA)       │
+                                             │  socket CLIENT, no DLL       │
+                                             │  CTrade, OrderCalcProfit     │
+                                             └──────────────────────────────┘
 ```
 
 ## Key decisions
@@ -36,19 +34,19 @@ Two Dart parts plus one MQL5 EA:
   executes.
 - **Idempotency**: intent written before send; EA acks with `client_order_id`;
   dedupe key = `(input_id, message_id, edit_version)`.
-- **UI crash never stops trading**: the engine is a separate headless process.
+- **UI crash never stops trading**: the dashboard is a separate static web app
+  served by the engine; the engine runs headless.
 
-## Packages
+## Components
 
 | Path | Role |
 |---|---|
-| `packages/core` | models, normalizer, classifier, text parser, symbol mapping, validator, sizing, SL/TP, roulette, limits |
-| `apps/engine` | headless engine (config, db, telegram, proxy, input registry, pipeline, mt5 link, http api, watchdog, replay) |
-| `apps/ui` | Flutter desktop UI |
+| `listener/` | Python/Telethon Listener + Management Panel; writes raw events to a shared SQLite queue |
+| `engine_py/nixo_engine/` | Python engine: queue consumer, parser, validator, roulette, risk planner, MT5 link, HTTP API |
+| `control_center/web/` | Vanilla HTML/CSS/JS dashboard |
 | `mt5/NixoLink.mq5` | EA |
 
 ## Reliability
 
-See `CHECKLIST.md` M6 for the full reliability matrix. The watchdog forces
-reconnect on staleness; the Telegram service never exits on network errors; the
-EA auto-reconnects with backoff.
+See `CHECKLIST.md` M6 for the full reliability matrix. The Listener queue uses
+time-limited leases and retries; the EA auto-reconnects with backoff.

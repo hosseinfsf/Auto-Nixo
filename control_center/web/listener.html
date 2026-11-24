@@ -1,0 +1,285 @@
+﻿<!-- control_center/web/listener.html -->
+<!DOCTYPE html>
+<html lang="en" dir="ltr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Nixo Lite — Listener Manager</title>
+<link rel="stylesheet" href="style.css">
+<style>
+  .listener-status { display: flex; gap: 1rem; align-items: center; margin-bottom: 1rem; }
+  .listener-status .badge { font-size: 1rem; padding: .4rem .8rem; }
+  .listener-controls { display: flex; gap: .5rem; margin-bottom: 1.5rem; }
+  .listener-log { background: #0a0f14; border: 1px solid #334155; border-radius: .5rem; padding: 1rem; font-family: monospace; font-size: .8rem; max-height: 300px; overflow-y: auto; white-space: pre-wrap; }
+  .proxy-table { width: 100%; border-collapse: collapse; }
+  .proxy-table th, .proxy-table td { padding: .5rem; border-bottom: 1px solid #334155; text-align: left; }
+  .proxy-table th { color: #9caeba; font-weight: 600; }
+  .proxy-form { display: grid; grid-template-columns: 1fr 1fr 1fr 1fr auto; gap: .5rem; margin-bottom: 1rem; }
+  .proxy-form input { padding: .4rem; border: 1px solid #334155; border-radius: .3rem; background: #1a2731; color: #e7edf2; }
+  .proxy-form button { padding: .4rem .8rem; border: none; border-radius: .3rem; cursor: pointer; }
+  .btn-start { background: #39d98a; color: #000; }
+  .btn-stop { background: #ff6b6b; color: #fff; }
+  .btn-test { background: #ffb020; color: #000; }
+  .btn-save { background: #3b82f6; color: #fff; }
+  .queue-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: .5rem; margin-bottom: 1rem; }
+  .queue-stat { background: #1a2731; padding: .8rem; border-radius: .5rem; text-align: center; }
+  .queue-stat .num { font-size: 1.5rem; font-weight: 700; }
+  .queue-stat .label { font-size: .75rem; color: #9caeba; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Nixo Lite — Listener Manager</h1>
+  <div class="status-bar" id="statusBar">
+    <span class="badge badge-offline">Listener: Offline</span>
+    <span class="badge badge-offline">Proxy: None</span>
+  </div>
+  <div class="nav">
+    <button class="nav-btn active" data-page="listener">Listener</button>
+    <button class="nav-btn" data-page="proxy">Proxy</button>
+    <button class="nav-btn" data-page="queue">Queue</button>
+  </div>
+</header>
+
+<main>
+  <!-- Listener Control -->
+  <section class="page" id="page-listener" data-page="listener">
+    <h2>Listener Control</h2>
+    <div class="listener-status" id="listenerStatus">
+      <span class="badge badge-offline">Status: Unknown</span>
+    </div>
+    <div class="listener-controls">
+      <button class="btn btn-start" onclick="startListener()">Start Listener</button>
+      <button class="btn btn-stop" onclick="stopListener()">Stop Listener</button>
+      <button class="btn btn-test" onclick="refreshStatus()">Refresh</button>
+    </div>
+    <div class="card">
+      <h3>Listener Log (last 50 lines)</h3>
+      <div class="listener-log" id="listenerLog">No log available yet.</div>
+    </div>
+  </section>
+
+  <!-- Proxy Manager -->
+  <section class="page hidden" id="page-proxy" data-page="proxy">
+    <h2>Proxy Manager</h2>
+    <div class="card">
+      <h3>Add Proxy</h3>
+      <div class="proxy-form">
+        <input type="text" id="proxyType" placeholder="Type (mtproto/socks5/http)" />
+        <input type="text" id="proxyHost" placeholder="Host" />
+        <input type="number" id="proxyPort" placeholder="Port" />
+        <input type="text" id="proxySecret" placeholder="Secret (MTProto only)" />
+        <button class="btn btn-save" onclick="addProxy()">Add</button>
+      </div>
+      <p class="meta">Policy: own server first → local Xray/Clash → public lists (explicit only). Secrets masked in UI.</p>
+    </div>
+    <div class="card">
+      <h3>Proxy List</h3>
+      <table class="proxy-table" id="proxyTable">
+        <thead>
+          <tr><th>Type</th><th>Host</th><th>Port</th><th>Status</th><th>Latency</th><th>Fail Count</th><th>Actions</th></tr>
+        </thead>
+        <tbody id="proxyTableBody">
+          <tr><td colspan="7">Loading...</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- Queue -->
+  <section class="page hidden" id="page-queue" data-page="queue">
+    <h2>Message Queue</h2>
+    <div class="queue-stats" id="queueStats">
+      <div class="queue-stat"><div class="num" id="qTotal">0</div><div class="label">Total</div></div>
+      <div class="queue-stat"><div class="num" id="qPending">0</div><div class="label">Pending</div></div>
+      <div class="queue-stat"><div class="num" id="qProcessed">0</div><div class="label">Processed</div></div>
+      <div class="queue-stat"><div class="num" id="qFailed">0</div><div class="label">Failed</div></div>
+    </div>
+    <div class="card">
+      <h3>Recent Messages (last 20)</h3>
+      <table class="proxy-table" id="queueTable">
+        <thead>
+          <tr><th>Chat ID</th><th>Msg ID</th><th>Ver</th><th>Type</th><th>State</th><th>Date (UTC)</th></tr>
+        </thead>
+        <tbody id="queueTableBody">
+          <tr><td colspan="6">Loading...</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+</main>
+
+<script>
+(function () {
+  'use strict';
+
+  // ---- Navigation ----
+  document.querySelectorAll('.nav-btn').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      document.querySelectorAll('.nav-btn').forEach(function (b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      document.querySelectorAll('.page').forEach(function (p) { p.classList.add('hidden'); });
+      var page = btn.getAttribute('data-page');
+      document.getElementById('page-' + page).classList.remove('hidden');
+      if (page === 'proxy') loadProxies();
+      if (page === 'queue') loadQueue();
+    });
+  });
+
+  // ---- Listener Control ----
+  function startListener() {
+    fetch('/api/listener/start', { method: 'POST' })
+      .then(function (r) { return r.json(); })
+      .then(function (d) { alert(d.message || 'Started'); refreshStatus(); })
+      .catch(function (e) { alert('Error: ' + e); });
+  }
+
+  function stopListener() {
+    fetch('/api/listener/stop', { method: 'POST' })
+      .then(function (r) { return r.json(); })
+      .then(function (d) { alert(d.message || 'Stopped'); refreshStatus(); })
+      .catch(function (e) { alert('Error: ' + e); });
+  }
+
+  function refreshStatus() {
+    fetch('/api/listener/status')
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        var badge = document.querySelector('#listenerStatus .badge');
+        if (d.running) {
+          badge.className = 'badge badge-online';
+          badge.textContent = 'Status: Running (PID ' + d.pid + ')';
+        } else {
+          badge.className = 'badge badge-offline';
+          badge.textContent = 'Status: Stopped';
+        }
+        if (d.log) {
+          document.getElementById('listenerLog').textContent = d.log;
+        }
+      })
+      .catch(function () {
+        document.querySelector('#listenerStatus .badge').className = 'badge badge-offline';
+        document.querySelector('#listenerStatus .badge').textContent = 'Status: Unknown';
+      });
+  }
+
+  // ---- Proxy Management ----
+  function addProxy() {
+    var type = document.getElementById('proxyType').value.trim();
+    var host = document.getElementById('proxyHost').value.trim();
+    var port = parseInt(document.getElementById('proxyPort').value, 10);
+    var secret = document.getElementById('proxySecret').value.trim();
+    if (!type || !host || !port) { alert('Type, host, and port are required'); return; }
+    fetch('/api/proxy/add', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: type, host: host, port: port, secret: secret || null })
+    })
+      .then(function (r) { return r.json(); })
+      .then(function (d) { alert(d.message || 'Added'); loadProxies(); })
+      .catch(function (e) { alert('Error: ' + e); });
+  }
+
+  function loadProxies() {
+    fetch('/api/proxy/list')
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        var tbody = document.getElementById('proxyTableBody');
+        if (!d.proxies || d.proxies.length === 0) {
+          tbody.innerHTML = '<tr><td colspan="7">No proxies configured</td></tr>';
+          return;
+        }
+        tbody.innerHTML = d.proxies.map(function (p) {
+          return '<tr>' +
+            '<td>' + p.type + '</td>' +
+            '<td>' + p.host + '</td>' +
+            '<td>' + p.port + '</td>' +
+            '<td><span class="badge ' + (p.status === 'active' ? 'badge-online' : 'badge-offline') + '">' + p.status + '</span></td>' +
+            '<td>' + (p.latency_ms ? p.latency_ms + ' ms' : '-') + '</td>' +
+            '<td>' + p.fail_count + '</td>' +
+            '<td><button class="btn btn-test" onclick="testProxy(\'' + p.type + '\',\'' + p.host + '\',' + p.port + ')">Test</button> ' +
+            '<button class="btn btn-stop" onclick="removeProxy(\'' + p.type + '\',\'' + p.host + '\',' + p.port + ')">Remove</button></td>' +
+            '</tr>';
+        }).join('');
+      })
+      .catch(function () {
+        document.getElementById('proxyTableBody').innerHTML = '<tr><td colspan="7">Error loading proxies</td></tr>';
+      });
+  }
+
+  function testProxy(type, host, port) {
+    fetch('/api/proxy/test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: type, host: host, port: port })
+    })
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        alert('Test result: ' + (d.ok ? 'OK (' + d.latency + 'ms)' : 'FAILED: ' + d.error));
+        loadProxies();
+      })
+      .catch(function (e) { alert('Error: ' + e); });
+  }
+
+  function removeProxy(type, host, port) {
+    if (!confirm('Remove proxy ' + host + ':' + port + '?')) return;
+    fetch('/api/proxy/remove', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: type, host: host, port: port })
+    })
+      .then(function (r) { return r.json(); })
+      .then(function (d) { alert(d.message || 'Removed'); loadProxies(); })
+      .catch(function (e) { alert('Error: ' + e); });
+  }
+
+  // ---- Queue ----
+  function loadQueue() {
+    fetch('/api/queue/stats')
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        document.getElementById('qTotal').textContent = d.total || 0;
+        document.getElementById('qPending').textContent = d.pending || 0;
+        document.getElementById('qProcessed').textContent = d.processed || 0;
+        document.getElementById('qFailed').textContent = d.failed || 0;
+      })
+      .catch(function () {});
+    fetch('/api/queue/recent')
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        var tbody = document.getElementById('queueTableBody');
+        if (!d.rows || d.rows.length === 0) {
+          tbody.innerHTML = '<tr><td colspan="6">No messages yet</td></tr>';
+          return;
+        }
+        tbody.innerHTML = d.rows.map(function (r) {
+          return '<tr>' +
+            '<td>' + r.chat_id + '</td>' +
+            '<td>' + r.message_id + '</td>' +
+            '<td>' + r.edit_version + '</td>' +
+            '<td>' + r.update_type + '</td>' +
+            '<td><span class="badge ' + (r.state === 'pending' ? 'badge-warn' : (r.state === 'processed' ? 'badge-online' : 'badge-offline')) + '">' + r.state + '</span></td>' +
+            '<td>' + r.date_utc + '</td>' +
+            '</tr>';
+        }).join('');
+      })
+      .catch(function () {
+        document.getElementById('queueTableBody').innerHTML = '<tr><td colspan="6">Error loading queue</td></tr>';
+      });
+  }
+
+  // Expose functions globally
+  window.startListener = startListener;
+  window.stopListener = stopListener;
+  window.refreshStatus = refreshStatus;
+  window.addProxy = addProxy;
+  window.testProxy = testProxy;
+  window.removeProxy = removeProxy;
+
+  // Initial load
+  refreshStatus();
+  setInterval(refreshStatus, 5000);
+})();
+</script>
+</body>
+</html>

@@ -11,5 +11,5 @@ for %%P in (9124 9123) do (
   )
 )
 
-echo [NIXO] Done. State is persisted in apps\engine\data\nixo.db.
+echo [NIXO] Done. State is persisted in engine_py\data\nixo_engine.db.
 endlocal

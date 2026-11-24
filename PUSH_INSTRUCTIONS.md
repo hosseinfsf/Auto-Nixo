@@ -3,7 +3,7 @@
 این فایل برای آپلود دستی پروژه به GitHub روی **PC** شماست (نه از داخل اپ).
 
 ## هدف
-پروژهٔ `nixo_lite/` (بازنویسی Dart/Flutter NIXO LITE) را به repo خصوصی
+پروژهٔ NIXO LITE (موتور Python + Listener + EA) را به repo خصوصی
 `https://github.com/hosseinfsf/Auto-Nixo` پوش کنید.
 
 ## پیشنیازها (روی PC)
@@ -31,23 +31,20 @@ git branch -M main
 git add .gitignore README.md CHECKLIST.md DECISIONS.md STATUS.md AGENTS.md
 git commit -m "skeleton/meta: meta files, gitignore, checklist, decisions, status"
 
-git add packages/core
-git commit -m "core: models, normalizer, classifier, parser, validator, risk"
+git add listener
+git commit -m "listener: Telethon Telegram Listener + Management Panel"
 
-git add apps/engine
-git commit -m "engine: config, db, telegram tdlib, proxy, pipeline, mt5 link, api, watchdog"
+git add engine_py
+git commit -m "engine: Python parser, risk planner, MT5 link, tests"
 
 git add mt5
 git commit -m "mt5: NixoLink.mq5 EA (socket client, CTrade)"
 
-git add apps/ui
-git commit -m "ui: Flutter desktop dashboard/sources/proxy/livefeed/settings"
+git add control_center
+git commit -m "web: vanilla dashboard"
 
-git add tests
-git commit -m "tests: core + engine unit tests"
-
-git add docs reports scripts .github
-git commit -m "docs: architecture, reports, fetch_tdjson script, CI"
+git add docs reports .github
+git commit -m "docs: architecture, reports, CI"
 
 # 4) ریموت را اضافه و پوش کن
 git remote add origin https://github.com/hosseinfsf/Auto-Nixo.git
@@ -58,7 +55,7 @@ git push -u origin main
 > `gh auth login` سپس `gh repo set-default hosseinfsf/Auto-Nixo`.
 
 ## بعد از پوش
-- CI (`.github/workflows/ci.yml`) خودکار روی `windows-latest` اجرا میشود.
+- CI (`.github/workflows/python-engine.yml`) خودکار تستهای Python را اجرا میکند.
 - لاگهای هر مرحله بهصورت artifact آپلود میشوند (حتی در صورت شکست).
 - اگر CI قرمز بود، فقط بر اساس لاگها اصلاح کن (یک شکست در هر بار).
 - هیچ مرحلهای که به Telegram/MT5/سکرت نیاز دارد در CI اجرا نمیشود.
@@ -66,5 +63,5 @@ git push -u origin main
 ## نکات امنیتی
 - هیچ سکرتی (api_id/api_hash، پروکسی واقعی، توکن) در پروژه نیست.
 - `.gitignore` شامل `*.session`, `*.db*`, `.env*`, `secrets/`, `*.dll`,
-  `*.exe`, `build/`, `.dart_tool/`, `node_modules/`, `logs/` است.
-- `tdjson.dll` هرگز کامیت نمیشود؛ از `scripts/fetch_tdjson.ps1` دانلود میشود.
+  `*.exe`, `build/`, `node_modules/`, `logs/` است.
+- فایلهای سشن و توکنها هرگز کامیت نمیشوند.

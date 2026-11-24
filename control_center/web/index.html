@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="en" dir="ltr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Nixo Lite — Web Dashboard</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <h1>Nixo Lite</h1>
+  <div class="status-bar" id="statusBar">
+    <span class="badge badge-offline">Engine: Offline</span>
+    <span class="badge badge-offline">Telegram: Offline</span>
+    <span class="badge badge-offline">MT5: Offline</span>
+  </div>
+  <div class="nav">
+    <button class="nav-btn active" data-page="overview">Overview</button>
+    <button class="nav-btn" data-page="telegram">Telegram</button>
+    <button class="nav-btn" data-page="proxy">Proxy</button>
+    <button class="nav-btn" data-page="roulette">Roulette</button>
+    <button class="nav-btn" data-page="mt5">MT5</button>
+    <button class="nav-btn" data-page="activity">Activity</button>
+    <button class="nav-btn" data-page="listener">Listener</button>
+  </div>
+</header>
+
+<main>
+  <!-- Overview -->
+  <section class="page" id="page-overview" data-page="overview">
+    <h2>Overview</h2>
+    <div class="grid">
+      <div class="card">
+        <h3>Account</h3>
+        <div class="kv" id="accountInfo">Loading...</div>
+      </div>
+      <div class="card">
+        <h3>Roulette</h3>
+        <div class="kv" id="rouletteInfo">Loading...</div>
+      </div>
+      <div class="card">
+        <h3>Last Signal</h3>
+        <div class="kv" id="lastSignal">Loading...</div>
+      </div>
+      <div class="card">
+        <h3>Last Order</h3>
+        <div class="kv" id="lastOrder">Loading...</div>
+      </div>
+      <div class="card">
+        <h3>Open Trades</h3>
+        <div class="kv" id="openTrades">Loading...</div>
+      </div>
+      <div class="card">
+        <h3>Today P/L</h3>
+        <div class="kv" id="todayPL">Loading...</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Telegram Settings -->
+  <section class="page hidden" id="page-telegram" data-page="telegram">
+    <h2>Telegram Settings</h2>
+    <div class="card">
+      <h3>Channels</h3>
+      <div id="channelList">Loading...</div>
+      <div class="form-row">
+        <input type="text" id="newChannelId" placeholder="Channel @username or ID">
+        <button class="btn btn-add" onclick="addChannel()">Add Channel</button>
+      </div>
+    </div>
+    <div class="card">
+      <h3>API Status</h3>
+      <div class="kv" id="telegramApiStatus">Loading...</div>
+    </div>
+  </section>
+
+  <!-- Telegram Proxy Settings -->
+  <section class="page hidden" id="page-proxy" data-page="proxy">
+    <h2>Telegram Connection → Proxy Settings</h2>
+    <div class="card">
+      <h3>Proxy Configuration</h3>
+      <div class="form-row">
+        <label>Enable Proxy</label>
+        <select id="proxyEnabled">
+          <option value="true">Enabled</option>
+          <option value="false">Disabled</option>
+        </select>
+      </div>
+      <div class="form-row">
+        <label>Mode</label>
+        <select id="proxyMode">
+          <option value="disabled">Disabled</option>
+          <option value="proxy_required">Proxy Required</option>
+          <option value="proxy_preferred">Proxy Preferred</option>
+        </select>
+      </div>
+      <div class="form-row">
+        <label>Proxy Type</label>
+        <select id="proxyType">
+          <option value="socks5">SOCKS5</option>
+          <option value="http">HTTP CONNECT</option>
+          <option value="mtproto">MTProto</option>
+        </select>
+      </div>
+      <div class="form-row">
+        <label>Host / IP</label>
+        <input type="text" id="proxyHost" placeholder="127.0.0.1">
+      </div>
+      <div class="form-row">
+        <label>Port</label>
+        <input type="number" id="proxyPort" value="10808">
+      </div>
+      <div class="form-row">
+        <label>Username</label>
+        <input type="text" id="proxyUsername" placeholder="(optional)">
+      </div>
+      <div class="form-row">
+        <label>Password</label>
+        <input type="password" id="proxyPassword" placeholder="(optional)">
+      </div>
+      <div class="form-row">
+        <label>Secret (MTProto)</label>
+        <input type="password" id="proxySecret" placeholder="(optional)">
+      </div>
+      <div class="form-row">
+        <label>Remote DNS</label>
+        <select id="proxyRdns">
+          <option value="true">Enabled</option>
+          <option value="false">Disabled</option>
+        </select>
+      </div>
+      <div class="form-row">
+        <label>Connect Timeout (s)</label>
+        <input type="number" id="proxyTimeout" value="10">
+      </div>
+      <div class="form-row">
+        <label>Max Retries</label>
+        <input type="number" id="proxyMaxRetries" value="3">
+      </div>
+      <div class="form-row">
+        <label>Retry Delay (s)</label>
+        <input type="number" id="proxyRetryDelay" value="5">
+      </div>
+      <div class="form-row">
+        <label>Direct Fallback</label>
+        <select id="proxyDirectFallback">
+          <option value="true">Enabled</option>
+          <option value="false">Disabled</option>
+        </select>
+      </div>
+      <div class="form-row">
+        <button class="btn btn-save" onclick="saveProxy()">Save Settings</button>
+        <button class="btn btn-test" onclick="testProxy()">Test Proxy</button>
+        <button class="btn btn-test" onclick="testTelegramProxy()">Test Telegram Connection</button>
+      </div>
+      <div id="proxyTestResult"></div>
+    </div>
+    <div class="card">
+      <h3>Status Indicators</h3>
+      <div class="kv" id="proxyStatus">Loading...</div>
+    </div>
+  </section>
+
+  <!-- Roulette Settings -->
+  <section class="page hidden" id="page-roulette" data-page="roulette">
+    <h2>Roulette Settings</h2>
+    <div class="card">
+      <h3>Configuration</h3>
+      <div class="form-row">
+        <label>Enabled</label>
+        <select id="rouletteEnabled">
+          <option value="true">Enabled</option>
+          <option value="false">Disabled</option>
+        </select>
+      </div>
+      <div class="form-row">
+        <label>Base Risk %</label>
+        <input type="number" id="rouletteBaseRisk" step="0.01" value="0.5">
+      </div>
+      <div class="form-row">
+        <label>Max Risk %</label>
+        <input type="number" id="rouletteMaxRisk" step="0.01" value="5.0">
+      </div>
+      <div class="form-row">
+        <label>Trigger %</label>
+        <input type="number" id="rouletteTriggerPct" step="0.01" value="3.0">
+      </div>
+      <div class="form-row">
+        <label>Max Steps</label>
+        <input type="number" id="rouletteMaxSteps" value="50">
+      </div>
+      <button class="btn btn-save" onclick="saveRoulette()">Save Roulette</button>
+    </div>
+    <div class="card">
+      <h3>Per-Source State</h3>
+      <div id="rouletteStateList">Loading...</div>
+    </div>
+  </section>
+
+  <!-- MT5 Settings -->
+  <section class="page hidden" id="page-mt5" data-page="mt5">
+    <h2>MT5 Settings</h2>
+    <div class="card">
+      <h3>Connection</h3>
+      <div class="form-row">
+        <label>Terminal Path</label>
+        <input type="text" id="mt5Path" placeholder="Path to MT5 terminal">
+      </div>
+      <div class="form-row">
+        <label>Account</label>
+        <input type="text" id="mt5Account" placeholder="Account number">
+      </div>
+      <div class="form-row">
+        <label>Server</label>
+        <input type="text" id="mt5Server" placeholder="Server name">
+      </div>
+      <button class="btn btn-test" onclick="testMt5()">Test Connection</button>
+      <div id="mt5TestResult"></div>
+    </div>
+    <div class="card">
+      <h3>Symbol Mapping</h3>
+      <div id="symbolMappingList">Loading...</div>
+    </div>
+    <div class="card">
+      <h3>Execution</h3>
+      <div class="form-row">
+        <label>Dry Run</label>
+        <select id="mt5DryRun">
+          <option value="true">Enabled (no real orders)</option>
+          <option value="false">Disabled (real orders)</option>
+        </select>
+      </div>
+      <button class="btn btn-save" onclick="saveMt5()">Save MT5</button>
+    </div>
+  </section>
+
+  <!-- Activity -->
+  <section class="page hidden" id="page-activity" data-page="activity">
+    <h2>Activity</h2>
+    <div class="card">
+      <h3>Recent Events</h3>
+      <div id="activityList">Loading...</div>
+    </div>
+  </section>
+  <!-- Listener -->
+  <section class="page hidden" id="page-listener" data-page="listener">
+    <h2>Listener Manager</h2>
+    <div class="card">
+      <h3>Listener Control</h3>
+      <div class="listener-status" id="listenerStatus">
+        <span class="badge badge-offline">Status: Unknown</span>
+      </div>
+      <div class="listener-controls">
+        <button class="btn btn-start" onclick="startListener()">Start Listener</button>
+        <button class="btn btn-stop" onclick="stopListener()">Stop Listener</button>
+        <button class="btn btn-test" onclick="refreshStatus()">Refresh</button>
+      </div>
+    </div>
+    <div class="card">
+      <h3>Listener Log (last 50 lines)</h3>
+      <div class="listener-log" id="listenerLog">No log available yet.</div>
+    </div>
+    <div class="card">
+      <h3>Queue Stats</h3>
+      <div class="queue-stats" id="queueStats">
+        <div class="queue-stat"><div class="num" id="qTotal">0</div><div class="label">Total</div></div>
+        <div class="queue-stat"><div class="num" id="qPending">0</div><div class="label">Pending</div></div>
+        <div class="queue-stat"><div class="num" id="qProcessed">0</div><div class="label">Processed</div></div>
+        <div class="queue-stat"><div class="num" id="qFailed">0</div><div class="label">Failed</div></div>
+      </div>
+    </div>
+    <div class="card">
+      <h3>Proxy List</h3>
+      <table class="table" id="proxyTable">
+        <thead><tr><th>Type</th><th>Host</th><th>Port</th><th>Status</th><th>Latency</th><th>Fail Count</th><th>Actions</th></tr></thead>
+        <tbody id="proxyTableBody"><tr><td colspan="7">Loading...</td></tr></tbody>
+      </table>
+    </div>
+    <div class="card">
+      <h3>Add Proxy</h3>
+      <div class="form-row">
+        <input type="text" id="proxyType" placeholder="Type (mtproto/socks5/http)">
+        <input type="text" id="proxyHost" placeholder="Host">
+        <input type="number" id="proxyPort" placeholder="Port">
+        <input type="text" id="proxySecret" placeholder="Secret (MTProto only)">
+        <button class="btn btn-save" onclick="addProxy()">Add</button>
+      </div>
+    </div>
+    <div class="card">
+      <h3>Recent Messages (last 20)</h3>
+      <table class="table" id="queueTable">
+        <thead><tr><th>Chat ID</th><th>Msg ID</th><th>Ver</th><th>Type</th><th>State</th><th>Date (UTC)</th></tr></thead>
+        <tbody id="queueTableBody"><tr><td colspan="6">Loading...</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+</main>
+
+<script src="app.js"></script>
+</body>
+</html>

@@ -1,6 +1,6 @@
 # STATUS
 
-**Last updated:** 2026-11-24 — Phase 0 security cleanup complete.
+**Last updated:** 2026-11-24 — Dart/Flutter code removed; Python engine is the runtime.
 
 ## Honest status
 
@@ -12,11 +12,7 @@
 | Independent backup created | PASS | sandbox | `C:\Nixo-Backup\Auto-Nixo-backup-20261124-012327.git` |
 | Old credentials purged from history | PASS | sandbox | `git grep` CLEAN for all 5 secrets |
 | `python -m unittest discover -s tests` (engine_py) | PASS (65/65) | sandbox | Fixed Windows file-locking in `db.py` + `listener_consumer.py` |
-| `dart analyze` (packages/core) | NOT RUN | needs Dart SDK | — |
-| `dart analyze` (apps/engine) | NOT RUN | needs Dart SDK | — |
-| `dart test` (packages/core) | NOT RUN | needs Dart SDK | — |
-| `dart test` (apps/engine) | NOT RUN | needs Dart SDK | — |
-| `flutter analyze` (apps/ui) | NOT RUN | needs Flutter SDK | — |
+| Dart/Flutter artifacts in working tree | NONE | sandbox | no `.dart`, `pubspec.yaml`, `.metadata`, `analysis_options.yaml` |
 | MQL5 EA compile | NOT RUN | needs MetaEditor | existing log: 0 errors, 2 warnings |
 | Live Telegram / MT5 | NOT RUN | needs credentials + terminal | — |
 
@@ -24,50 +20,35 @@
 
 | Item | Code exists | Unit-tested | Verified live | Evidence |
 |---|---|---|---|---|
-| Core models (`models.dart`) | yes | yes | no | core suite |
-| Digit normalizer (`normalizer.dart`) | yes | yes | no | core suite |
-| Classifier (`classifier.dart`) | yes | yes | no | core suite |
-| Text parser (`text_parser.dart`) | yes | yes | no | core suite |
-| Symbol mapping (`symbol_mapping.dart`) | yes | yes | no | core suite |
-| Validator (`validator.dart`) | yes | yes | no | core suite |
-| Sizing (`sizing.dart`) | yes | yes | no | core suite |
-| SL/TP resolver (`sl_tp.dart`) | yes | yes | no | core suite |
-| Roulette (`roulette.dart`) | yes | yes | no | core + engine suite |
-| Limits (`limits.dart`) | yes | yes | no | core suite |
-| SQLite store (`db.dart`) | yes | yes | no | persistence suite |
-| TDLib FFI client (`tdlib_client.dart`) | yes | no | no | needs tdjson.dll |
-| Telegram source (`telegram_source.dart`) | yes | no | no | needs live session |
-| Proxy manager (`proxy_manager.dart`) | yes | no | no | not run |
-| Input registry (`input_registry.dart`) | yes | yes | no | engine suite |
-| Pipeline (`pipeline.dart`) | yes | yes | no | engine suite (incl. demo integration) |
-| MT5 link server (`link_server.dart`) | yes | no | no | needs MT5 terminal |
-| MT5 protocol (`protocol.dart`) | yes | yes | no | engine suite |
-| HTTP API + web dashboard (`http_api.dart`, `web/`) | yes | no | no | needs a browser session |
-| Watchdog (`watchdog.dart`) | yes | no | no | not run |
-| Replay tool (`replay.dart`) | yes | yes | no | engine suite |
-| Engine entrypoint (`bin/engine.dart`) | yes | no | no | not run |
+| Strict signal parser (`signal_parser.py`) | yes | yes | no | engine_py suite |
+| Digit normalizer / classifier | yes | yes | no | engine_py suite |
+| Validator (`signal_processor.py`) | yes | yes | no | engine_py suite |
+| Roulette (`roulette.py`) | yes | yes | no | engine_py suite |
+| SQLite store (`db.py`) | yes | yes | no | engine_py suite |
+| MT5 link server (`server.py`) | yes | yes | no | needs MT5 terminal |
+| MT5 protocol (`mt5_protocol.py`) | yes | yes | no | engine_py suite |
+| Risk planner (`execution.py`) | yes | yes | no | dry-run only |
+| Listener queue consumer (`listener_consumer.py`) | yes | yes | no | needs live Telegram |
+| Telegram Listener (`listener/`) | yes | no | no | needs live Telegram |
+| Web dashboard (`control_center/web/`) | yes | no | no | needs a browser session |
 | MQL5 EA (`NixoLink.mq5`) | yes | no | no | never compiled in MetaEditor |
-| Flutter UI (`apps/ui/`) | yes | no | no | never built |
-| Web dashboard (`apps/engine/web/`) | yes | no | no | served by the engine, not opened in a browser |
-| Python engine (`engine_py/nixo_engine/`) | yes | yes (65/65) | no | full test suite |
-| Telegram listener (`listener/`) | yes | no | no | needs live Telegram |
 
 ## Roulette: deviations from docs/ROULETTE_SPEC.md
 
 Still **not** an exact match. These remain open and unapproved:
 
-| # | Spec (EA) | `roulette.dart` | Status |
+| # | Spec (EA) | `roulette.py` | Status |
 |---|---|---|---|
-| 1 | Order win: `step = min(cap, step + 1)` | `step = step*2` capped | OPEN |
-| 2 | `InpRouletteTrigger` = 4.00% | `triggerPct = 3.0` | OPEN |
-| 3 | `InpMaxStep` = 50 | `maxSteps = 3` | OPEN |
-| 4 | `InpBaseRisk` = 0.25% | `baseRiskPct = 0.5` | OPEN |
-| 5 | `InpMaxOrderCount` = 8 | 8 | matches |
+| 1 | Order win: `step = min(cap, step + 1)` | `step + 1` capped | matches |
+| 2 | `InpRouletteTrigger` = 4.00% | `activation_trigger_pct = 3.0` | OPEN |
+| 3 | `InpMaxStep` = 50 | `max_steps = 50` | matches |
+| 4 | `InpBaseRisk` = 0.25% | `base_risk_pct = 0.5` | OPEN |
+| 5 | `InpMaxOrderCount` = 8 | `max_order_count = 8` | matches |
 | 6 | State in MT5 globals | SQLite `roulette_states` | by design |
 | 7 | Flat zone `|profit| < 0.15*riskMoney` | same | matches |
 
 Sizing default risk is **0.25%** when a profile omits `risk_percent`
-(`pipeline.dart`), covered by a test.
+(`execution.py`), covered by a test.
 
 ## Not verified (needs live environment)
 
@@ -78,8 +59,7 @@ Sizing default risk is **0.25%** when a profile omits `risk_percent`
 - OrderCalcProfit lot math against a live broker.
 - TradingView webhook through a tunnel.
 - Any browser session against the dashboard.
-- Any Flutter build.
-- Dart SDK / Flutter SDK not available in sandbox.
+- Dart/Flutter code removed from the working tree.
 
 ## How to run on the owner's PC
 
@@ -90,9 +70,10 @@ Health_Check.bat      # /health + /status + listeners
 Stop_Nixo.bat         # stops the engine; state stays in data/nixo.db
 
 # manual
-cd packages/core && dart pub get && dart analyze && dart test
-cd ../../apps/engine && dart pub get && dart analyze && dart test
-cd ../.. && dart run apps/engine/bin/engine.dart --self-test
+cd engine_py && py -3 -m unittest discover -s tests -v
+py -3 -m nixo_engine.listener_consumer --queue-db ..\listener\data\listener_queue.db --engine-db .\data\nixo_engine.db
+py -3 -m nixo_engine.signal_processor --engine-db .\data\nixo_engine.db
+py -3 -m nixo_engine.execution --config .\engine_config.json --engine-db .\data\nixo_engine.db
 # EA: compile mt5/NixoLink.mq5 in MetaEditor (F7)
 ```
 

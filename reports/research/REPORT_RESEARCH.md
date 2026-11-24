@@ -1,4 +1,4 @@
-﻿# NIXO — Open-Source Architecture Research Report (v2, corrected)
+# NIXO — Open-Source Architecture Research Report (v2, corrected)
 
 > Research only. No code, no installs, no clones. All factual claims cite a source URL; unverifiable items are marked **UNVERIFIED**. Owner decisions recorded in section 3.
 
@@ -12,18 +12,16 @@
 |---|---|---|---|
 | `mt5/NixoLink.mq5` | MQL5 (MetaEditor) | Socket-client EA; no DLL; connects to engine on 127.0.0.1:9123; AUTH token + heartbeat 2s; KEY=VALUE protocol | Compiled: **0 errors, 2 warnings** (see 0.3). No automated test (MQL5). |
 | `control_center/web/` | HTML/CSS/JS (vanilla) | Dashboard: Overview, Telegram, Proxy, Roulette, MT5, Activity. Served by engine HTTP API on 127.0.0.1:9124 | No automated tests |
-| `apps/engine/` | Config + data only | `engine_config.example.json`, `engine_config.json` (secret — not read), `telegram_proxy.example.json`, `data/nixo.db` (not read) | n/a |
-| `docs/`, `reports/`, `scripts/`, `config/`, `telegram/`, `data/` | Docs/config | Architecture, checklist, decisions, operating, reports, fetch_tdjson.ps1 | n/a |
+| `engine_py/` | Python engine | Parser, validator, roulette, risk planner, MT5 link, tests | `py -3 -m unittest discover -s tests` → 65 passed |
+| `listener/` | Python/Telethon | Telegram Listener + Management Panel | No automated tests |
+| `docs/`, `reports/`, `telegram/`, `data/` | Docs/config | Architecture, checklist, decisions, operating, reports | n/a |
 | `Start_Nixo.bat`, `Health_Check.bat`, `Stop_Nixo.bat` | Windows BAT | Launcher/health/stop | n/a |
 
-### 0.2 Archived (moved to `archive/legacy_dart_flutter/`)
+### 0.2 Removed
 
-| Path | Stack | Role | Tests / CI |
-|---|---|---|---|
-| `archive/legacy_dart_flutter/apps/engine/` | Dart (SDK >=3.0) | Headless engine: pipeline, MT5 link server, protocol, Telegram (TDLib FFI), proxy manager, input registry, HTTP API, watchdog, replay, SQLite DB | `dart test` → **83 passed** (run locally this session). CI workflow archived. |
-| `archive/legacy_dart_flutter/packages/core/` | Dart (SDK >=3.0) | Shared core: models, normalizer, classifier, text parser, symbol mapping, validator, sizing, SL/TP, limits, roulette | `dart test` → **46 passed** (run locally this session). |
-| `archive/legacy_dart_flutter/apps/ui/` | Flutter | Desktop UI (dashboard, sources, proxy, settings, live feed) | Never built (no Flutter SDK in sandbox) |
-| `archive/legacy_dart_flutter/.github/workflows/ci.yml` | GitHub Actions | CI for core/engine/ui + gitleaks | Archived with the Dart code |
+All Dart/Flutter code (`apps/engine/`, `packages/core/`, `apps/ui/`,
+`archive/legacy_dart_flutter/`, `scripts/fetch_tdjson.ps1`) was removed at the
+owner's request. The Python engine is the only runtime.
 
 ### 0.3 MT5 EA compile log (verbatim tail)
 
@@ -73,7 +71,7 @@ The two warnings are at `mt5/NixoLink.mq5:130` and `:131`, inside `CLine::AddD`/
 
 **7. ivk1800/td-json-client-prebuilt** — https://github.com/ivk1800/td-json-client-prebuilt — **UNVERIFIED** (fetch returned no content). Referenced in Nixo DECISIONS.md as allowed tdjson source. Provenance/checksums **UNVERIFIED**.
 
-**Durable queue:** No third-party SQLite queue library verified → use plain SQLite WAL (Nixo already uses it in `db.dart`). Marked as **GAP** for a library; not a gap for implementation (SQLite WAL is sufficient).
+**Durable queue:** No third-party SQLite queue library verified → use plain SQLite WAL (Nixo already uses it in `engine_py/nixo_engine/db.py`). Marked as **GAP** for a library; not a gap for implementation (SQLite WAL is sufficient).
 
 ### B. Nixo Engine (existing, archived Dart)
 
@@ -145,7 +143,7 @@ Already covers: pipeline, classifier, parser, validator, sizing, SL/TP, limits, 
 - What it does: Python Telegram-to-MT5 signal copier: Telethon listener, tolerant signal parser, symbol mapping, stale/duplicate checks, risk-based lot sizing, partial TPs with breakeven, CSV/JSON trade log, dry-run mode.
 - What could be reused (MIT, with attribution): `copier/parser.py`, `copier/validator.py`, `copier/sizing.py`, `copier/tradelog.py`, `copier/models.py` — pure logic, no MT5 coupling except `SymbolSpec`.
 - What must NOT be reused: `copier/broker.py` (uses direct `MetaTrader5` Python package — conflicts with Nixo's socket-EA design), `copier/main.py` (Telethon listener — conflicts with Nixo's TDLib approach).
-- Conflicts with existing Nixo: would replace `packages/core` parser/validator/sizing (Dart) and `apps/engine` pipeline; different language (Python vs Dart). Reuse is optional and requires porting.
+- Conflicts with existing Nixo: would replace `engine_py/nixo_engine` parser/validator/sizing; reuse is optional and requires porting.
 
 ---
 
