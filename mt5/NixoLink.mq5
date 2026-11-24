@@ -19,6 +19,7 @@
 #property description "Executes orders for the NIXO engine over a localhost socket (no DLL)."
 
 #include <Trade/Trade.mqh>
+#include "NixoPanel.mqh"
 
 //--- inputs
 input string InpEngineHost    = "127.0.0.1";
@@ -38,6 +39,7 @@ input int    InpHistorySyncIntervalMin = 30; // periodic catch-up; 0 = reconnect
 
 //--- state
 CTrade g_trade;
+CNixoPanel g_nixo_panel;
 int    g_socket      = INVALID_HANDLE;
 bool   g_authed      = false;
 uchar  g_rx[];
@@ -1450,6 +1452,19 @@ int OnInit()
       Print("NixoLink: cannot set millisecond timer");
       return(INIT_FAILED);
    }
+   if(!g_nixo_panel.CreatePanel(0,"NIXO Link Monitor",0,18,22,410,238))
+   {
+      Print("NixoLink: read-only panel creation failed");
+      EventKillTimer();
+      return(INIT_FAILED);
+   }
+   if(!g_nixo_panel.Run())
+   {
+      Print("NixoLink: read-only panel Run failed");
+      g_nixo_panel.Destroy(0);
+      EventKillTimer();
+      return(INIT_FAILED);
+   }
    Print("NixoLink v2.00 started. Real accounts allowed: ", InpAllowReal ? "YES" : "NO");
    return(INIT_SUCCEEDED);
 }
@@ -1457,6 +1472,7 @@ int OnInit()
 void OnDeinit(const int reason)
 {
    EventKillTimer();
+   g_nixo_panel.Destroy(reason);
    if(g_socket != INVALID_HANDLE)
       SocketClose(g_socket);
    g_socket = INVALID_HANDLE;
@@ -1465,6 +1481,7 @@ void OnDeinit(const int reason)
 void OnTimer()
 {
    ulong now = GetTickCount64();
+   g_nixo_panel.Refresh(g_authed,g_lastRx);
    if(g_socket == INVALID_HANDLE || !SocketIsConnected(g_socket))
    {
       if(g_socket != INVALID_HANDLE)
@@ -1501,3 +1518,9 @@ void OnTimer()
    }
 }
 //+------------------------------------------------------------------+
+
+void OnChartEvent(const int id,const long &lparam,
+                  const double &dparam,const string &sparam)
+{
+   g_nixo_panel.ForwardChartEvent(id,lparam,dparam,sparam);
+}

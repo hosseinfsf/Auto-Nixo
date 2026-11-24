@@ -37,3 +37,9 @@ line count, and which upstream API it calls.
 ## control_center/web/listener.html (12,057 bytes)
 - **Purpose**: Standalone listener page (reference).
 - **Upstream**: None (static HTML).
+
+## mt5/NixoPanel.mqh (125 lines)
+- **Purpose**: Read-only on-chart link/account monitor using MetaQuotes' bundled Controls library. Displays EA authentication state, last engine RX age, account login/type, balance/equity; explicitly marks Telegram status and ping RTT unavailable in the current protocol. No trade controls or order calls.
+- **Upstream APIs**: MetaQuotes Standard Library `CAppDialog`, `CLabel`, `ChartRedraw`; MQL5 `AccountInfoInteger`, `AccountInfoDouble`, `AccountInfoString`, `GetTickCount64`.
+- **Glue functions**: CreateLine, RefreshDue, AccountText, MoneyText, SetTextIfChanged, CreatePanel, Refresh, ForwardChartEvent.
+- **Update policy**: called from the EA timer; samples at most every 500 ms and redraws only when displayed values change.
